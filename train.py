@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.init as init
 from torchinfo import summary
 from torchvision import transforms
+
 from torch.utils.data import DataLoader
 
 from data import IceContrast
@@ -112,7 +113,7 @@ class Trainer(object):
         self.optimizer = optim.Adagrad(self.net.parameters(), lr=optimizer_params['learning_rate'],
                                   weight_decay=optimizer_params['wd'])
 
-
+        ######### evaluation metrics #########
 
 
 
