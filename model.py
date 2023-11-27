@@ -81,6 +81,21 @@ class MPCMResNetFPN(nn.Module):
         c3pcm = self.cal_pcm(c3, shift=self.shift)
         up_c3pcm = F.interpolate(c3pcm, size=(c2_h, c2_w), mode='bilinear', align_corners=False)
 
+        inc_c2 = self.inc_c2(c2)
+        c2pcm = self.cal_pcm(c2, shift=self.shift)
+
+        c23pcm = up_c3pcm + c2pcm
+
+        up_c23pcm = F.interpolate(c23pcm, size=(c1_h, c1_w), mode='bilinear', align_corners=False)
+
+        inc_c1 = self.inc_c1(c1)
+        c1pcm = self.cal_pcm(c1, shift=self.shift)
+
+        out = up_c23pcm + c1pcm
+        pred = self.head(out)
+        out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
+
+        return out
 
 
     def circ_shift(self, cen, shift):
