@@ -1,16 +1,15 @@
 """Evaluation Metrics for Semantic Segmentation of Foreground Only"""
 import threading
 
-import mxnet as mx
-from mxnet import nd
-from mxnet.metric import EvalMetric
 
 import numpy as np
 import torch
 import torchnet.meter as meter
 
 
+import torchnet.meter as meter
 
+# torchnet.meter.Meter和meterlogger中 Visualize, reset update的重写
 
 __all__ = ['SigmoidMetric', 'batch_pix_accuracy', 'batch_intersection_union']
 
@@ -39,7 +38,7 @@ class SigmoidMetric(meter):
         """
 
         def evaluate_worker(self, label, pred):
-            correct, labeled = batch_pix_accuracy(pred, label)
+            correct, labeled = batch_pix_accuracy(pred, label)  # correct:TP, labeled:TP+FN
             inter, union = batch_intersection_union(pred, label, self.nclass)
             with self.lock:
                 self.total_correct += correct
@@ -82,6 +81,12 @@ class SigmoidMetric(meter):
 
 
 def batch_pix_accuracy(output, target):
+    """
+    compute batch pixelwise accuracy
+    :param output: pred, tensor, 4D(B, C, H, W), int64, 0 or 1
+    :param target: label, tensor, 3D(B, H, W), int64, 0 or 1
+    :return:
+    """
     """PixAcc"""
     # inputs are NDarray, output 4D, target 3D
     # the category 0 is ignored class, typically for background / boundary
@@ -91,16 +96,16 @@ def batch_pix_accuracy(output, target):
     # print("output.max(): ", output.max().asscalar())
     # print("target.max(): ", target.max().asscalar())
     if len(target.shape) == 3:
-        target = nd.expand_dims(target, axis=1).asnumpy().astype('int64')  # T
+        target = target.squeeze(1).asnumpy().astype('int64')          # B,1,H,W    # astype('int64')? 改int8
     elif len(target.shape) == 4:
-        target = target.asnumpy().astype('int64')  # T
+        target = target.asnumpy().astype('int64')  # T = TP + FN
     else:
         raise ValueError("Unknown target dimension")
     # print("output.shape: ", output.shape)
     # print("target.shape: ", target.shape)
-    assert output.shape == target.shape, "Predict and Label Shape Don't Match"
-    predict = (output.asnumpy() > 0).astype('int64')  # P
-    pixel_labeled = np.sum(target > 0)  # T
+    assert output.shape == target.shape, "Predict and Label Shape need to Match"
+    predict = (output.asnumpy() > 0).astype('int64')  # P = TP + FP
+    pixel_labeled = np.sum(target > 0)  # T = TP + FN
     pixel_correct = np.sum((predict == target) * (target > 0))  # TP
 
     assert pixel_correct <= pixel_labeled, "Correct area should be smaller than Labeled"
@@ -108,6 +113,13 @@ def batch_pix_accuracy(output, target):
 
 
 def batch_intersection_union(output, target, nclass):
+    """
+    compute batch mIoU
+    :param output: pred 4D(B, C, H, W), int64, 0 or 1
+    :param target: label 3D(B, H, W), int64, 0 or 1
+    :param nclass: class
+    :return:
+    """
     """mIoU"""
     # inputs are NDarray, output 4D, target 3D
     # the category 0 is ignored class, typically for background / boundary
@@ -116,15 +128,16 @@ def batch_intersection_union(output, target, nclass):
     nbins = 1  # nclass
     predict = (output.asnumpy() > 0).astype('int64')  # P
     if len(target.shape) == 3:
-        target = nd.expand_dims(target, axis=1).asnumpy().astype('int64')  # T
+        target.unsqueeze(1).asnumpy().astype('int64')  # T  (B,1,H,W)
     elif len(target.shape) == 4:
         target = target.asnumpy().astype('int64')  # T
     else:
         raise ValueError("Unknown target dimension")
+
     intersection = predict * (predict == target)  # TP
 
-    # areas of intersection and union
-    area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))
+    # areas of intersection and union   (np.histogram的用法)
+    area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))  # 统计intersection里为1的
     area_pred, _ = np.histogram(predict, bins=nbins, range=(mini, maxi))
     area_lab, _ = np.histogram(target, bins=nbins, range=(mini, maxi))
     area_union = area_pred + area_lab - area_inter

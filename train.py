@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument('--cue', type=str, default='lcm', help='choice:lcm, orig')  # ?
 
     ####### dataset #######
+    parser.add_argument('--data_root', type=str, default='./data/', help='dataset path')
     parser.add_argument('--dataset', type=str, default='DENTIST', help='choice:DENTIST, Iceberg')
     parser.add_argument('--workers', type=int, default=16, metavar='N', help='dataloader threads')   # metavar ?
     parser.add_argument('--base-size', type=int, default=512, help='base image size')
@@ -108,15 +109,16 @@ class Trainer(object):
              transforms.Normalize([.485, .456, .406], [.229, .224, .225])])
 
         ######## dataset and dataloader ########
-        data_root = os.path.join(args.data_path, 'train')
+        data_root = args.data_root
         if os.path.exists(data_root) is False:
             raise FileNotFoundError("{} is not found".format(data_root))
 
-        data_kwargs = {'base_size': args.base_size,
+        data_kwargs = {'root': data_root,
+                       'base_dir': args.dataset,
+                       'base_size': args.base_size,
                        'crop_size': args.crop_size,
                        'transform': input_transform,
-                       'root': data_root,
-                       'base_dir': args.dataset}
+                       'include_name': False}
 
         trainset = IceContrast(split=args.train_split, mode='train', **data_kwargs)
         valset = IceContrast(split=args.val_split, mode='testval', **data_kwargs)
@@ -134,7 +136,7 @@ class Trainer(object):
 
         if net_choice == 'MPCMResnetFPN':
             r = args.r
-            layers = [args.blocks] * 3
+            layers = [args.blocks] * 3    # 3 stage, each stage has args.blocks(4) resnet basic blocks
             channels = [8, 16, 32, 64]
             shift = args.shift
             pyramid_mode = args.pyramid_mode

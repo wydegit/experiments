@@ -40,7 +40,7 @@ class MPCMResNetFPN(nn.Module):
                                        stage_index=3, in_channels=channels[2])
 
         self.inc_c2 = nn.Sequential()
-        self.inc_c2.add_module("inc_c2_conv", nn.Conv2d(channels[1], channels[3], kernel_size=1, stride=1,
+        self.inc_c2.add_module("inc_c2_conv", nn.Conv2d(channels[2], channels[3], kernel_size=1, stride=1,
                                                         padding=0, bias=False))
         self.inc_c2.add_module("inc_c2_bn", norm_layer(channels[-1]))
         self.inc_c2.add_module("inc_c2_relu", nn.ReLU())
@@ -51,47 +51,49 @@ class MPCMResNetFPN(nn.Module):
         self.inc_c1.add_module("inc_c1_bn", norm_layer(channels[-1]))
         self.inc_c1.add_module("inc_c1_relu", nn.ReLU())
 
-    def _make_layer(self, block, layers, channels, stride, stage_index, in_channels=0, norm_layer=nn.BatchNorm2d,
+    def _make_layer(self, block, layers, channels, stride, stage_index, in_channels, norm_layer=nn.BatchNorm2d,
                     norm_kwargs=None):
         layer = nn.Sequential()     # prefix="layer{}".format(stage_index)
         downsample = (channels != in_channels) or (stride != 1)  # channels有变化或者stride不为1时，需要downsample
-        layer.add_module("stage{}".format(stage_index),
-                         block(channels, stride, downsample, in_channels=in_channels, norm_layer=norm_layer,
-                               norm_kwargs=norm_kwargs, prefix=''))
-        for _ in range(layers-1):
-            layer.add_module("stage{}".format(stage_index),
-                             block(channels, 1, False, in_channels=channels, norm_layer=norm_layer,
-                                   norm_kwargs=norm_kwargs, prefix=''))
+
+        layer.add_module("stage{}".format(stage_index), block(inplanes=in_channels, planes=channels, stride=stride,
+                                                              downsample=downsample, norm_layer=norm_layer))
+
+        for _ in range(layers-1):  # 0，1，2
+            layer.add_module("stage{}".format(stage_index), block(inplanes=channels, planes=channels, stride=1,
+                                                                  downsample=None, norm_layer=norm_layer))
+
         return layer
 
     def forward(self, x):
+
         _, _, orig_h, orig_w = x.shape
-        x = self.stem(x)
+        x = self.stem(x)    # 480*480*16
 
         c1 = self.layer1(x)
+        _, _, c1_h, c1_w = c1.shape    # 480*480*16
 
-        _, _, c1_h, c1_w = c1.shape
         c2 = self.layer2(c1)
+        _, _, c2_h, c2_w = c2.shape    # 240*240*32
 
-        _, _, c2_h, c2_w = c2.shape
         c3 = self.layer3(c2)
-
-        _, _, c3_h, c3_w = c3.shape
+        _, _, c3_h, c3_w = c3.shape   # 120*120*64
 
         c3pcm = self.cal_pcm(c3, shift=self.shift)
         up_c3pcm = F.interpolate(c3pcm, size=(c2_h, c2_w), mode='bilinear', align_corners=False)
 
-        inc_c2 = self.inc_c2(c2)
+        inc_c2 = self.inc_c2(c2)   # same channal size as c3 64
         c2pcm = self.cal_pcm(c2, shift=self.shift)
 
-        c23pcm = up_c3pcm + c2pcm
+        c23pcm = up_c3pcm + c2pcm    # BLAM ？
 
         up_c23pcm = F.interpolate(c23pcm, size=(c1_h, c1_w), mode='bilinear', align_corners=False)
-
         inc_c1 = self.inc_c1(c1)
         c1pcm = self.cal_pcm(c1, shift=self.shift)
 
-        out = up_c23pcm + c1pcm
+        out = up_c23pcm + c1pcm     # BLAM ？
+
+        # out size : 480*480*64
         pred = self.head(out)
         out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear', align_corners=False)
 
