@@ -8,7 +8,7 @@ from torchvision import transforms
 
 from torch.utils.data import DataLoader
 
-from data import IceContrast
+from mydataset import SIRST
 
 from loss import SoftIoULoss
 import torch.optim as optim
@@ -29,13 +29,13 @@ def parse_args():
     parser.add_argument('--pyramid-mode', type=str, default='Dec', help='Inc,Dec') # ?
     parser.add_argument('--r', type=int, default=2, help='choice:1,2,4')   # ?
     parser.add_argument('--summary', action='store_true', help='print parameters')   # 命令行输入参数则为True(激活)，否则为False
-    parser.add_argument('--scale-mode', type=str, default='xxx', help='choice:Single, Multiple, Selective')
-    parser.add_argument('--pyramid-fuse', type=str, default='sk', help='choice:add, max, sk')
+    parser.add_argument('--scale-mode', type=str, default='Multiple', help='choice:Single, Multiple, Selective')
+    parser.add_argument('--pyramid-fuse', type=str, default='bottomuplocal', help='choice:add, max, sk')
     parser.add_argument('--cue', type=str, default='lcm', help='choice:lcm, orig')  # ?
 
     ####### dataset #######
     parser.add_argument('--data_root', type=str, default='./data/', help='dataset path')
-    parser.add_argument('--dataset', type=str, default='DENTIST', help='choice:DENTIST, Iceberg')
+    parser.add_argument('--dataset', type=str, default='SIRST', help='choice:DENTIST, Iceberg')
     parser.add_argument('--workers', type=int, default=16, metavar='N', help='dataloader threads')   # metavar ?
     parser.add_argument('--base-size', type=int, default=512, help='base image size')
     parser.add_argument('--crop-size', type=int, default=480, help='crop image size')
@@ -52,7 +52,7 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, default=16, metavar='N', help='input batch size for training')
     parser.add_argument('--test-batch-size', type=int, default=32, metavar='N', help='input batch size for testing')
     parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 1e-3)')
-    parser.add_argument('--lr-decay', type=float, defalut=0.1, help='decay rate of learning rate')
+    parser.add_argument('--lr-decay', type=float, default=0.1, help='decay rate of learning rate')
     parser.add_argument('--lr-decay-epoch', type=str, default='100,200', help='epochs at which learning rate decays (default: 40,60)')
     parser.add_argument('--gamma', type=int, default=2, help='gamma for Focal Soft Iou Loss')
     parser.add_argument('--lambda', type=int, default=1, help='lambda for TV Soft Iou Loss')
@@ -88,7 +88,7 @@ def parse_args():
     if args.no_cuda or (torch.cuda.is_available() == False):
         print('Using CPU')
         args.kvstore = 'local'
-        args.ctx =  torch.device('cpu')
+        args.ctx = torch.device('cpu')
     else:
         args.ctx = [torch.device('cuda:' + i) for i in args.gpus.split(',') if i.strip()]
         print('Using {} GPU: {}, '.format(len(args.ctx), args.ctx))
@@ -120,8 +120,11 @@ class Trainer(object):
                        'transform': input_transform,
                        'include_name': False}
 
-        trainset = IceContrast(split=args.train_split, mode='train', **data_kwargs)
-        valset = IceContrast(split=args.val_split, mode='testval', **data_kwargs)
+
+        trainset = SIRST(split=args.train_split, mode='train', **data_kwargs)
+        valset = SIRST(split=args.val_split, mode='testval', **data_kwargs)
+
+        self.train_data = DataLoader(trainset, batch_size=args.batch_size, shuffle=True)
 
         self.train_data = DataLoader(trainset, args.batch_size, shuffle=True,
                                      last_batch='rollover', num_workers=args.workers)
@@ -179,28 +182,24 @@ class Trainer(object):
             # self.net.summary(mx.nd.ones((1, 3, args.crop_size, args.crop_size), ctx=args.ctx)) # args.ctx?
 
         # loss
-        self.criterion = SoftIoULoss()
-
-        # lr_scheduler and optimizer
-        lr_lambda = lambda epoch: 1 - (epoch / args.epochs) ** 0.9
-        self.lr_scheduler =
-
-        optimizer_params = {'wd': args.weight_decay,
-                            'learning_rate': args.lr,}
-        if args.dtype == 'float16':
-            optimizer_params['multi_precision'] = True
-        if args.no_wd:
-            for k, v in self.net.params('.*beta|.*gamma|.*bias').items():
-                v.wd_mult = 0.0  # ?
-
-        self.optimizer = optim.Adagrad(self.net.parameters(), lr=optimizer_params['learning_rate'],
-                                  weight_decay=optimizer_params['wd'])
+        # self.criterion = SoftIoULoss()
+        #
+        # # lr_scheduler and optimizer
+        # lr_lambda = lambda epoch: 1 - (epoch / args.epochs) ** 0.9
+        # self.lr_scheduler =
+        #
+        # optimizer_params = {'wd': args.weight_decay,
+        #                     'learning_rate': args.lr,}
+        # if args.dtype == 'float16':
+        #     optimizer_params['multi_precision'] = True
+        # if args.no_wd:
+        #     for k, v in self.net.params('.*beta|.*gamma|.*bias').items():
+        #         v.wd_mult = 0.0  # ?
+        #
+        # self.optimizer = optim.Adagrad(self.net.parameters(), lr=optimizer_params['learning_rate'],
+        #                           weight_decay=optimizer_params['wd'])
 
         ######### evaluation metrics #########
-
-
-
-
 
 
 def init_weights(m):
@@ -210,3 +209,16 @@ def init_weights(m):
             init.constant_(m.bias, 0)
     elif isinstance(m, nn.PReLU):
         init.constant_(m.weight, 0.25)
+
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    trainer = Trainer(args)
+    if args.eval:
+        print('Evaluating model: ', args.resume)
+        trainer.validation(args.start_epoch)
+    else:
+        print('Starting Epoch:', args.start_epoch)
+        print('Total Epochs:', args.epochs)
+        trainer.validation(0)
