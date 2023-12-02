@@ -8,7 +8,7 @@ import random
 
 
 class SIRST(Dataset):
-    NUM_CLASS = 1
+    NUM_CLASSES = 1
     def __init__(self, root, base_dir, split, mode, base_size, crop_size, transform=None, include_name=None):
         super(SIRST, self).__init__()
 
@@ -42,7 +42,7 @@ class SIRST(Dataset):
         :return: list of images in select datasets
         """
         ids = []
-        root = os.path.join(self._root, 'split')
+        root = os.path.join(self._root, 'splits')
         lf = os.path.join(root, split + '.txt')
         with open(lf, 'r') as f:
             ids += [(root, line.strip()) for line in f.readlines()]

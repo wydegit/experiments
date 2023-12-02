@@ -7,7 +7,7 @@ from torchvision.models.resnet import BasicBlock
 
 
 class ALCNet(nn.Module):
-    def __init__(self, layers, channels, shift=3, pyramid_mode='xxx', scale_mode='xxx',
+    def __init__(self, layers, channels, shift=13, pyramid_mode='xxx', scale_mode='xxx',
                  pyramid_fuse='xxx', r=2, classes=1, norm_layer=nn.BatchNorm2d, norm_kwargs=None,):
         super(ALCNet, self).__init__()
 
@@ -21,7 +21,7 @@ class ALCNet(nn.Module):
 
         stem_width = int(channels[0])
         self.stem = nn.Sequential()  # prefix="stem"
-        self.stem.add_module("bn0", norm_layer(stem_width, affine=False))
+        self.stem.add_module("bn0", norm_layer(3, affine=False))   # 改inchannels
         self.stem.add_module("conv1", nn.Conv2d(3, stem_width * 2, kernel_size=3, stride=1, padding=1, bias=False))
         self.stem.add_module("bn1", norm_layer(stem_width * 2))
         self.stem.add_module("relu1", nn.ReLU())
@@ -55,7 +55,7 @@ class ALCNet(nn.Module):
             self.cm = PCMLayer(mpcm=True)
 
             if self.pyramid_fuse == 'bottomuplocal':
-                self.bottomuplocal_fpn_2 = BottomUpLocal_FPNFuse(channels=channels[1])
+                self.bottomuplocal_fpn_2 = BottomUpLocal_FPNFuse(channels=channels[1])   # 改inchannels
                 self.bottomuplocal_fpn_1 = BottomUpLocal_FPNFuse(channels=channels[1])
             elif self.pyramid_fuse == 'bottomupglobal':
                 self.bottomupglobal_fpn_2 = BottomUpGlobal_FPNFuse(channels=channels[1])
@@ -84,14 +84,21 @@ class ALCNet(nn.Module):
     def _make_layer(self, block, layers, channels, stride, stage_index, in_channels, norm_layer=nn.BatchNorm2d,
                     norm_kwargs=None):
         layer = nn.Sequential()     # prefix="layer{}".format(stage_index)
-        downsample = (channels != in_channels) or (stride != 1)  # channels有变化或者stride不为1时，需要downsample
 
-        layer.add_module("stage{}".format(stage_index), block(inplanes=in_channels, planes=channels, stride=stride,
-                                                              downsample=downsample, norm_layer=norm_layer))
+        if (channels != in_channels) or (stride != 1):  # channels有变化或者stride不为1时，需要downsample
+            downsample = nn.Sequential()
+            downsample.add_module("downsample_conv", nn.Conv2d(in_channels, channels, kernel_size=1, stride=stride,
+                                                               bias=False))
+            downsample.add_module("downsample_bn", norm_layer(channels))
+        else:
+            downsample = None
 
-        for _ in range(layers-1):  # 0，1，2
-            layer.add_module("stage{}".format(stage_index), block(inplanes=channels, planes=channels, stride=1,
-                                                                  downsample=None, norm_layer=norm_layer))
+        layer.add_module("stage{}_1".format(stage_index), block(inplanes=in_channels, planes=channels, stride=stride,
+                                                                downsample=downsample, norm_layer=norm_layer))
+
+        for i in range(layers-1):  # 0，1，2
+            layer.add_module("stage{}_{}".format(stage_index, i+2), block(inplanes=channels, planes=channels, stride=1,
+                                                                          downsample=None, norm_layer=norm_layer))
 
         return layer
 
@@ -158,7 +165,8 @@ class ALCNet(nn.Module):
             c1pcm = self.cal_pcm(c1, shift=self.shift)
 
             out = up_c23pcm + c1pcm
-
+        else:
+            raise ValueError("unknown pyramid_mode")
 
         # out size : 480*480*64
         pred = self.head(out)
@@ -175,9 +183,9 @@ class ALCNet(nn.Module):
 class BottomUpLocal_FPNFuse(nn.Module):
     def __init__(self, channels=64):  # channels=16
         super(BottomUpLocal_FPNFuse, self).__init__()
-        inter_channels = int(channels // 1)
+        inter_channels = int(channels // 2)
 
-        self.bn = nn.BatchNorm2d
+        self.bn = nn.BatchNorm2d(channels)
 
         self.bottomup_att = nn.Sequential()
         self.bottomup_att.add_module("bottomupL_att_conv1", nn.Conv2d(in_channels=channels, out_channels=inter_channels,
@@ -206,7 +214,7 @@ class BottomUpGlobal_FPNFuse(nn.Module):
         super(BottomUpGlobal_FPNFuse, self).__init__()
         inter_channels = int(channels // 1)
 
-        self.bn = nn.BatchNorm2d()
+        self.bn = nn.BatchNorm2d(channels)
 
         self.bottomup_att = nn.Sequential()
         self.bottomup_att.add_module('botomupG_GloAvgPool', nn.AdaptiveAvgPool2d(1))
@@ -220,7 +228,7 @@ class BottomUpGlobal_FPNFuse(nn.Module):
         self.bottomup_att.add_module("bottomupL_att_sigmoid", nn.Sigmoid())
 
 
-    def hybrid_forward(self, x, residual):
+    def forward(self, x, residual):
 
         x = self.bn(x)
         residual = self.bn(residual)
