@@ -48,9 +48,9 @@ def parse_args():
     parser.add_argument('--val-split', type=str, default='val_v1', help='choice:test, val')
 
     ####### training hyperparameters #######
-    parser.add_argument('--epochs', type=int, default=50, metavar='N', help='number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train')
     parser.add_argument('--start_epoch', type=int, default=0, metavar='N', help='start epoch')
-    parser.add_argument('--batch-size', type=int, default=8, metavar='N', help='input batch size for training')
+    parser.add_argument('--batch-size', type=int, default=2, metavar='N', help='input batch size for training')
     parser.add_argument('--test-batch-size', type=int, default=32, metavar='N', help='input batch size for testing')
     parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 1e-3)')
     parser.add_argument('--lr-decay', type=float, default=0.1, help='decay rate of learning rate')
