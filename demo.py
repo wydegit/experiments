@@ -1,53 +1,95 @@
-import torchnet.meter.meter as m
+import torch
+from torchnet.meter import meter, ConfusionMeter, TimeMeter
 import torchnet.logger as logger
 import threading
 import numpy as np
+from torch.nn.functional import sigmoid
 
-class PixAccMeter(m.Meter):
-    """Computes pixAcc
+
+
+def confusion_matrix(output, target, threshold=0.5, class_num=2):
     """
+    compute confusion matrix
+    :param output: model output, tensor, B,C,H,W
+    :param target: label, tensor, B,H,W
+    :param class_num: 2, target and background
+    :return: list of confusion matrix of each image in a batch
+    """
+    confusion_m = []  # list
+    cm = ConfusionMeter(class_num, normalized=False)
+    img_per_batch = output.shape[0]
+    output = torch.squeeze(output, 1)  # B,H,W
+    for b in range(img_per_batch):
+        predict = (sigmoid(output[b]) > threshold).type(torch.int8)
+        assert predict.shape == target[b].shape, "Predict and Label Shape need to Match"
+        cm.add(predict, target[b])
+        confusion_m.append(cm.value())
+    return confusion_m
 
-    def __init__(self, nclass):
-        super(PixAccMeter, self).__init__()
+class IoUMetric(meter.Meter):
+    def __init__(self, select='IoU'):
+        super(IoUMetric, self).__init__()
+        self.select = select
         self.reset()
 
     def reset(self):
-        self.total_inter = 0
-        self.total_union = 0
-        self.total_correct = 0
-        self.total_label = 0
+        self.IoU = 0
+        self.nIoU = 0
 
-    def add(self, output=None, target=None, weight=None):
-        """
-        compute batch pixelwise accuracy
-        :param output: pred, tensor, 4D(B, C, H, W), int64, 0 or 1
-        :param target: label, tensor, 3D(B, H, W), int64, 0 or 1
-        :return:
-        """
-        """PixAcc"""
-        # inputs are NDarray, output 4D, target 3D
-        # the category 0 is ignored class, typically for background / boundary
-        # predict = np.argmax(output.asnumpy(), 1).astype('int64')
-        # print("Metric output.shape: ", output.shape)
-        # print("Metric target.shape: ", target.shape)
-        # print("output.max(): ", output.max().asscalar())
-        # print("target.max(): ", target.max().asscalar())
-        if len(target.shape) == 3:
-            target = target.squeeze(1).asnumpy().astype('int64')  # B,1,H,W    # astype('int64')? 改int8
-        elif len(target.shape) == 4:
-            target = target.asnumpy().astype('int64')  # T = TP + FN
+    def add(self, confusion_m):
+        if self.select == 'nIoU':
+            iou_b = []
+            for each in confusion_m:
+                iou = each[1, 1] / (each[1].sum() + each[:, 1].sum() + each[1, 1])
+                iou_b.append(iou)
+            self.nIoU = np.mean(iou_b)
+        elif self.select == 'IoU':
+            tp = confusion_m[:, 1, 1].sum()
+            t = confusion_m[:, 1, :].sum()
+            p = confusion_m[:, :, 1].sum()
+            self.IoU = tp / (t + p - tp)
         else:
-            raise ValueError("Unknown target dimension")
-        # print("output.shape: ", output.shape)
-        # print("target.shape: ", target.shape)
-        assert output.shape == target.shape, "Predict and Label Shape need to Match"
-        predict = (output.asnumpy() > 0).astype('int64')  # P = TP + FP
-        pixel_labeled = np.sum(target > 0)  # T = TP + FN
-        pixel_correct = np.sum((predict == target) * (target > 0))  # TP
+            raise ValueError("Unknown IoU select: {}".format(self.select))
+    def value(self):
+        if self.select == 'nIoU':
+            return self.nIoU
+        elif self.select == 'IoU':
+            return self.IoU
+        else:
+            raise ValueError("Unknown IoU select: {}".format(self.select))
 
-        assert pixel_correct <= pixel_labeled, "Correct area should be smaller than Labeled"
-        return pixel_correct, pixel_labeled
+class PFMetric(meter.Meter):
+    def __init__(self, select):
+        super(PFMetric, self).__init__()
+        self.select = select
+        self.reset()
 
-        def value(self):
-            """Returns pixel accuracy"""
-            self.correct = self.total_correct
+    def reset(self):
+        self.pd = 0
+        self.fa = 0
+
+    def add(self, confusion_m):
+        if self.select == 'Pd' or self.select == 'ROC':
+            self.pd = confusion_m[:, 1, 1].sum() / confusion_m[:, 1, :].sum()
+        elif self.select == 'Fa' or self.select == 'ROC':
+            self.fa = confusion_m[:, 0, 1].sum() / confusion_m[:, 0, :].sum()
+        else:
+            raise ValueError("Unknown PdFa select: {}".format(self.select))
+
+    def value(self):
+        if self.select == 'Pd':
+            return self.pd
+        elif self.select == 'Fa':
+            return self.fa
+        elif self.select == 'ROC':
+            return self.pd, self.fa
+        else:
+            raise ValueError("Unknown PdFa select: {}".format(self.select))
+
+
+
+
+
+
+
+

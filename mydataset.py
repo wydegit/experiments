@@ -45,7 +45,7 @@ class SIRST(Dataset):
         root = os.path.join(self._root, 'splits')
         lf = os.path.join(root, split + '.txt')
         with open(lf, 'r') as f:
-            ids += [(root, line.strip()) for line in f.readlines()]
+            ids += [[line.strip()] for line in f.readlines()]
 
         random.shuffle(ids)
 
