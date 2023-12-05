@@ -1,21 +1,18 @@
-
+# coding=utf-8
 import os
+import argparse
 import torch
 import torch.nn as nn
 import torch.nn.init as init
 from torchinfo import summary
 from torchvision import transforms
-from model import ALCNet
 from torch.utils.data import DataLoader
-
-from mydataset import SIRST
-
-from loss import SoftIoULoss
 import torch.optim as optim
 from torch.optim.lr_scheduler import LambdaLR
-
-import argparse
-
+from model import ALCNet
+from mydataset import SIRST
+from loss import SoftIoULoss
+from metric import confusion_matrix, IoUMetric, PFMetric
 from tqdm import tqdm
 
 def parse_args():
@@ -75,8 +72,8 @@ def parse_args():
     parser.add_argument('--colab', action='store_true', help='whether using colab')
 
     ####### evaluation #######
-    parser.add_argument('--eval', action='store_true', help='evaluating only')
-    parser.add_argument('--no-val', action='store_true', help='skip validation during training')
+    parser.add_argument('--eval', action='store_true', default=False, help='evaluating only')
+    parser.add_argument('--no-val', action='store_true', default=False, help='skip validation during training')
     parser.add_argument('--metric', type=str, default='mAP', help='choich:F1, IoU, mAP')
 
     ####### synchronized BatchNorm for multiple devices or distributed system #######
@@ -106,8 +103,9 @@ class Trainer(object):
     def __init__(self, args):
         input_transform = transforms.Compose(
             [transforms.ToTensor(),
+             transforms.Normalize([.439], [.108])])   # sirst_trainvaltest_v1_single_channel mean and std
              # [.418, .447, .571], [.091, .078, .076] iceberg mean and std
-             transforms.Normalize([.485, .456, .406], [.229, .224, .225])])
+             # [.485, .456, .406], [.229, .224, .225] imagenet mean and std
 
         ######## dataset and dataloader ########
         data_root = args.data_root
@@ -123,7 +121,7 @@ class Trainer(object):
 
 
         trainset = SIRST(split=args.train_split, mode='train', **data_kwargs)
-        valset = SIRST(split=args.val_split, mode='testval', **data_kwargs)
+        valset = SIRST(split=args.val_split, mode='val', **data_kwargs)
 
 
         self.train_data = DataLoader(trainset, args.batch_size, shuffle=True,
@@ -178,7 +176,7 @@ class Trainer(object):
 
         # summary
         if args.summary:
-            summary(self.net, input_size=(args.batch_size, 3, args.crop_size, args.crop_size))
+            summary(self.net, input_size=(args.batch_size, 1, args.crop_size, args.crop_size))
             # self.net.summary(mx.nd.ones((1, 3, args.crop_size, args.crop_size), ctx=args.ctx))
         self.net.to(args.ctx[0])
 
@@ -228,12 +226,30 @@ class Trainer(object):
             tbar.set_description('Epoch: %d, Training loss: %.3f' % (epoch, train_loss / (i + 1)))
 
 
-    # def validation(self, epoch):
+    def validation(self, epoch):
+        tbar = tqdm(self.eval_data)
+        iou_metric = IoUMetric(select='IoU')
+        niou_metric = IoUMetric(select='nIoU')
+        batch_iou = []
+        batch_niou = []
+        self.net.eval()
+        for i, (images, labels) in enumerate(tbar):
+            images = images.to(args.ctx[0])
+            labels = labels.to(args.ctx[0])
+            pred = self.net(images)
 
+            cm = confusion_matrix(pred, labels, threshold=args.score_thresh)
 
+            iou_metric.add(cm)
+            niou_metric.add(cm)
 
+            batch_iou.append(iou_metric.value())
+            batch_niou.append(niou_metric.value())
 
+        self.iou = sum(batch_iou) / len(batch_iou)
+        self.niou = sum(batch_niou) / len(batch_niou)
 
+        tbar.set_description('Epoch: %d, IoU: %.3f, nIoU: %.3f' % (epoch, self.iou, self.niou))
 
 
 
@@ -258,3 +274,5 @@ if __name__ == "__main__":
         print('Total Epochs:', args.epochs)
         for epoch in range(args.start_epoch, args.epochs):
             trainer.training(epoch)
+            if not args.no_val:
+                trainer.validation(epoch)

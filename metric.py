@@ -22,7 +22,7 @@ def confusion_matrix(output, target, threshold=0.5, class_num=2):
     for b in range(img_per_batch):
         predict = (sigmoid(output[b]) > threshold).type(torch.int8)
         assert predict.shape == target[b].shape, "Predict and Label Shape need to Match"
-        cm.add(predict, target[b])
+        cm.add(predict.view(-1), target[b].view(-1))
         confusion_m.append(cm.value())
     return confusion_m
 
@@ -37,6 +37,12 @@ class IoUMetric(meter.Meter):
         self.nIoU = 0
 
     def add(self, confusion_m):
+        """
+
+        :param confusion_m: list of confusion matrix of each image in a batch
+        :return:
+        """
+        confusion_m = np.array(confusion_m)
         if self.select == 'nIoU':
             iou_b = []
             for each in confusion_m:
@@ -47,7 +53,7 @@ class IoUMetric(meter.Meter):
             tp = confusion_m[:, 1, 1].sum()
             t = confusion_m[:, 1, :].sum()
             p = confusion_m[:, :, 1].sum()
-            self.IoU = tp / (t + p - tp)
+            self.IoU = 1.0 * tp / (t + p - tp + np.spacing(1))
         else:
             raise ValueError("Unknown IoU select: {}".format(self.select))
     def value(self):

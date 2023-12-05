@@ -21,8 +21,8 @@ class ALCNet(nn.Module):
 
         stem_width = int(channels[0])
         self.stem = nn.Sequential()  # prefix="stem"
-        self.stem.add_module("bn0", norm_layer(3, affine=False))   # 改inchannels
-        self.stem.add_module("conv1", nn.Conv2d(3, stem_width * 2, kernel_size=3, stride=1, padding=1, bias=False))
+        self.stem.add_module("bn0", norm_layer(1, affine=False))   # inchannels的选择 1/3
+        self.stem.add_module("conv1", nn.Conv2d(1, stem_width * 2, kernel_size=3, stride=1, padding=1, bias=False))
         self.stem.add_module("bn1", norm_layer(stem_width * 2))
         self.stem.add_module("relu1", nn.ReLU())
 
@@ -238,9 +238,6 @@ class BottomUpGlobal_FPNFuse(nn.Module):
         xo = bottomup_wei * x + residual
 
         return xo
-
-
-
 
 
 class PCMLayer(nn.Module):

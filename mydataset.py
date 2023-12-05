@@ -59,7 +59,7 @@ class SIRST(Dataset):
         img_path = self._image_path.format(*img_id)
         label_path = self._anno_path.format(*img_id)
 
-        img = Image.open(img_path).convert('RGB')   # convert("L") ? 单通道
+        img = Image.open(img_path).convert('L')   # convert("RGB") 灰度图转RGB，RGB三通道复制
         if self.mode == 'test':
             img = img.resize((self.base_size, self.base_size), Image.BILINEAR)
             img = self._transform(img)
@@ -81,10 +81,10 @@ class SIRST(Dataset):
             raise ValueError('Unknown mode: {}'.format(self.mode))
 
         img, mask = self._transform(img), self._transform(mask)
-        mask = mask.squeeze(0).astype('float32') / 255.0
+        mask = mask.squeeze(0).type(dtype=torch.float32) / 255.0
 
-        # if self.include_name:
-        #     return img, mask, img_id[-1]
+        # if self.include_name: + img_id[-1]
+        return img, mask
 
     @property
     def classes(self):
