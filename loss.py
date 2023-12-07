@@ -21,6 +21,9 @@ class SoftIoULoss(nn.Module):
         return loss
 
 class SamplewiseSoftIoULoss(nn.Module):
+    """
+    a batch
+    """
     def __init__(self, smooth=.1):
         super(SamplewiseSoftIoULoss, self).__init__()
         self.smooth = smooth
