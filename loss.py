@@ -1,8 +1,7 @@
-import torch
 import torch.nn as nn
 
 class SoftIoULoss(nn.Module):
-    def __init__(self, smooth=1):
+    def __init__(self, smooth=.1):
         """
         custom loss function -- SoftIoU Loss
         """
@@ -11,32 +10,21 @@ class SoftIoULoss(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, pred, target):
+        assert pred.size() == target.size()
+        assert pred.dim() == 3
+
         pred = self.sigmoid(pred)
 
-        intersection = pred * target
-        loss = (intersection.sum() + self.smooth) / (pred.sum() + target.sum() - intersection.sum() + self.smooth)
+        inter = (pred * target).sum(dim=(1, 2))
 
-        loss = 1 - loss.mean()
+        pred = pred.sum(dim=(1, 2))
+        target = target.sum(dim=(1, 2))
 
-        return loss
+        # sets_sum = pred + target
+        # sets_sum = torch.where(sets_sum == 0, inter, sets_sum)
 
-class SamplewiseSoftIoULoss(nn.Module):
-    """
-    a batch
-    """
-    def __init__(self, smooth=.1):
-        super(SamplewiseSoftIoULoss, self).__init__()
-        self.smooth = smooth
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, pred, target):
-        pred = self.sigmoid(pred)
-
-        intersection = (pred * target).sum(dim=(1, 2, 3))
-        pred = pred.sum(dim=(1, 2, 3))
-        target = target.sum(dim=(1, 2, 3))
-
-        loss = (intersection + self.smooth) / (pred + target - intersection + self.smooth)
+        loss = (inter + self.smooth) / (pred + target - inter + self.smooth)
         loss = (1 - loss).mean()
 
         return loss
+

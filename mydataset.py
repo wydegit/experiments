@@ -8,7 +8,7 @@ import random
 
 
 class SIRST(Dataset):
-    NUM_CLASSES = 1
+    NUM_CLASSES = 2
     def __init__(self, root, base_dir, split, mode, base_size, crop_size, transform=None, include_name=None):
         super(SIRST, self).__init__()
 
@@ -22,7 +22,7 @@ class SIRST(Dataset):
         self._split = split
         self.mode = mode
 
-        self._transform = transform  # basic transform--totensor, normalize
+        self.transform = transform
         self.base_size = base_size
         self.crop_size = crop_size
 
@@ -48,7 +48,6 @@ class SIRST(Dataset):
             ids += [[line.strip()] for line in f.readlines()]
 
         random.shuffle(ids)
-
         return ids
 
     def __len__(self):
@@ -60,35 +59,55 @@ class SIRST(Dataset):
         label_path = self._anno_path.format(*img_id)
 
         img = Image.open(img_path).convert('L')   # convert("RGB") 灰度图转RGB，RGB三通道复制
-        if self.mode == 'test':
-            img = img.resize((self.base_size, self.base_size), Image.BILINEAR)
-            img = self._transform(img)
 
-            return img   #, img_id[-1]
+        if self.mode == 'test':
+            img = self._img_transform(img)  # pil to array
+            if self.transform is not None:
+                img = self.transform(img)   # resize, normalize, toTensor
+            # if self.include_name: + img_id[-1]
+            return img
 
 
         mask = Image.open(label_path)
         # synchronized transform
         if self.mode == 'train':
             img, mask = self._sync_transform(img, mask)
-            # insert resize ?
 
-        elif self.mode == 'val':    # resize + basic transform
-            img = img.resize((self.base_size, self.base_size), Image.BILINEAR)
-            mask = img.resize((self.base_size, self.base_size), Image.NEAREST)
-
+        elif self.mode == 'val':
+            img, mask = self._val_sync_transform(img, mask)
         else:
-            raise ValueError('Unknown mode: {}'.format(self.mode))
+            assert self.mode == 'testval'
+            img, mask = self._img_transform(img), self._mask_transform(mask)
 
-        img, mask = self._transform(img), self._transform(mask)
-        mask = mask.squeeze(0).type(dtype=torch.float32) / 255.0
+        if self.transform is not None:
+            img = self.transform(img)
 
         # if self.include_name: + img_id[-1]
         return img, mask
 
-    @property
-    def classes(self):
-        return ('target')
+
+    def _val_sync_transform(self, img, mask):
+        outsize = self.crop_size
+        short_size = outsize
+        w, h = img.size
+        if w > h:
+            oh = short_size
+            ow = int(1.0 * w * oh / h)
+        else:
+            ow = short_size
+            oh = int(1.0 * h * ow / w)
+        img = img.resize((ow, oh), Image.BILINEAR)
+        mask = mask.resize((ow, oh), Image.NEAREST)
+        # center crop
+        w, h = img.size
+        x1 = int(round((w - outsize) / 2.))
+        y1 = int(round((h - outsize) / 2.))
+        img = img.crop((x1, y1, x1 + outsize, y1 + outsize))
+        mask = mask.crop((x1, y1, x1 + outsize, y1 + outsize))
+        # final transform
+        img, mask = self._img_transform(img), self._mask_transform(mask)
+        return img, mask
+
 
     def _sync_transform(self, img, mask):
         """
@@ -97,46 +116,62 @@ class SIRST(Dataset):
         :param mask:
         :return:
         """
-        random.seed(41)   # ****种子加在哪里的问题，调试
-        # random mirror
         if random.random() < 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
             mask = mask.transpose(Image.FLIP_LEFT_RIGHT)
-
+        crop_size = self.crop_size
         # random scale (short edge)
-        long_size = random.randint(int(self.base_size * 0.5), int(self.base_size * 2.0))
+        short_size = random.randint(int(self.base_size * 0.5), int(self.base_size * 2.0))
         w, h = img.size
         if h > w:
-            oh = long_size
-            ow = int(1.0 * w * long_size / h + 0.5)
-            short_size = ow
+            ow = short_size
+            oh = int(1.0 * h * ow / w)
         else:
-            ow = long_size
-            oh = int(1.0 * h * long_size / w + 0.5)
-            short_size = oh
+            oh = short_size
+            ow = int(1.0 * w * oh / h)
         img = img.resize((ow, oh), Image.BILINEAR)
         mask = mask.resize((ow, oh), Image.NEAREST)
-
         # pad crop
-        crop_size = self.crop_size
         if short_size < crop_size:
             padh = crop_size - oh if oh < crop_size else 0
             padw = crop_size - ow if ow < crop_size else 0
             img = ImageOps.expand(img, border=(0, 0, padw, padh), fill=0)
             mask = ImageOps.expand(mask, border=(0, 0, padw, padh), fill=0)
-
         # random crop crop_size
         w, h = img.size
         x1 = random.randint(0, w - crop_size)
         y1 = random.randint(0, h - crop_size)
         img = img.crop((x1, y1, x1 + crop_size, y1 + crop_size))
         mask = mask.crop((x1, y1, x1 + crop_size, y1 + crop_size))
-
         # gaussian blur as in PSP
         if random.random() < 0.5:
             img = img.filter(ImageFilter.GaussianBlur(radius=random.random()))
-
+        # final transform
+        img, mask = self._img_transform(img), self._mask_transform(mask)
         return img, mask
 
-    # dataloader 相关
-    # def collate_fn(self):
+    def _img_transform(self, img):
+        """
+        PIL to Array
+        :param img:
+        :return:
+        """
+        return np.array(img)
+
+    def _mask_transform(self, mask):
+        """
+        PIL to Array
+        :param mask:
+        :return:
+        """
+        target = np.array(mask).astype('int32')
+        target[target > 0] = 1
+        return torch.from_numpy(target).long()
+
+    @property
+    def classes(self):
+        return ('background', 'target')
+
+    def num_class(self):
+        """Number of categories."""
+        return self.NUM_CLASSES

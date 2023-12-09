@@ -1,5 +1,6 @@
 import os
 import argparse
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -11,8 +12,11 @@ from torch.optim.lr_scheduler import LambdaLR
 from model import ALCNet
 from mydataset import SIRST
 from loss import SoftIoULoss
-from metric import confusion_matrix, IoUMetric, PFMetric
+from metric import SegmentationMetric
+from logger import setup_logger
 from tqdm import tqdm
+import shutil
+from visdom import Visdom
 
 def parse_args():
     """
@@ -22,16 +26,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description='alcnet pytorch')
 
     ####### model #######
-    parser.add_argument('--net_choice', type=str, default='ALCNet', help='model')
+    parser.add_argument('--net-choice', type=str, default='ALCNet', help='model')
     parser.add_argument('--pyramid-mode', type=str, default='Dec', help='Inc,Dec') # ?
     parser.add_argument('--r', type=int, default=2, help='choice:1,2,4')   # ?
-    parser.add_argument('--summary', action='store_true', default=True, help='print parameters')   # 命令行输入参数则为True(激活)，否则为False
+    parser.add_argument('--summary', action='store_true', default=False, help='print parameters')   # 命令行输入参数则为True(激活)，否则为False
     parser.add_argument('--scale-mode', type=str, default='Multiple', help='choice:Single, Multiple, Selective')
     parser.add_argument('--pyramid-fuse', type=str, default='bottomuplocal', help='choice:add, max, sk')
     parser.add_argument('--cue', type=str, default='lcm', help='choice:lcm, orig')  # ?
 
     ####### dataset #######
     parser.add_argument('--data_root', type=str, default='./data/', help='dataset path')
+    parser.add_argument('--out', type=str, default='./', help='metrics saved path')
     parser.add_argument('--dataset', type=str, default='open-sirst-v2', help='choice:DENTIST, Iceberg')
     parser.add_argument('--workers', type=int, default=1, metavar='N', help='dataloader threads')   # metavar ?
     parser.add_argument('--base-size', type=int, default=512, help='base image size')
@@ -42,6 +47,7 @@ def parse_args():
     parser.add_argument('--iou-thresh', type=float, default=0.5, help='iou threshold')
     parser.add_argument('--train-split', type=str, default='train_v1', help='choice:train, trainval')
     parser.add_argument('--val-split', type=str, default='val_v1', help='choice:test, val')
+
 
     ####### training hyperparameters #######
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train')
@@ -65,9 +71,14 @@ def parse_args():
     parser.add_argument('--kvstore', type=str, default='device', help='kvstore to use for trainer/module.')  # multi-GPU training
     parser.add_argument('--dtype', type=str, default='float32', help='data type for training')
     parser.add_argument('--wd', type=float, default=1e-4, help='weight decay rate')  # ? 与上边weight-decay有什么区别
+    parser.add_argument('--log-dir', type=str, default='./logs', help='log directory')
+    parser.add_argument('--log-iter', type=int, default=10, help='print log every log-iter')
+
+
 
     ####### checking point #######
     parser.add_argument('--resume', type=str, default=None, help='put the path to resuming file if needed')  # './params/
+    parser.add_argument('--save-dir', type=str, default='./params', help='Directory for saving checkpoint models')
     parser.add_argument('--colab', action='store_true', help='whether using colab')
 
     ####### evaluation #######
@@ -79,6 +90,7 @@ def parse_args():
     parser.add_argument('--syncbn', action='store_true', help='using Synchronized Cross-GPU BatchNorm')
 
     args = parser.parse_args()
+
 
     ## used devices  (ctx)
     # available_gpus = list(range(torch.cuda.device_count()))
@@ -97,16 +109,39 @@ def parse_args():
     print(args)
     return args
 
+def save_checkpoint(model, args, epoch, is_best=False):
+    """Save Checkpoint"""
+    directory = args.save_dir
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    filename = '{}_{}_{}.pth'.format(args.net_choice, args.dataset, epoch)
+    filename = os.path.join(directory, filename)
+
+    # if args.distributed:
+    #     #     model = model.module
+    torch.save(model.state_dict(), filename)
+
+    if is_best:
+        best_filename = '{}_{}_{}_best_model.pth'.format(args.model, args.backbone, args.dataset)
+        best_filename = os.path.join(directory, best_filename)
+        shutil.copyfile(filename, best_filename)
+
+
 
 class Trainer(object):
     def __init__(self, args):
+
+        self.viz = Visdom()
+        self.viz.line([0.], [0.], win='train_loss', opts=dict(title='train loss'))
+        self.viz.line([[0., 0., 0.,]], [0.], win='metrics', opts=dict(title='metrics', legend=['pixAcc', 'mIoU', 'nIoU']))
+
+        ######## dataset and dataloader ########
         input_transform = transforms.Compose(
             [transforms.ToTensor(),
              transforms.Normalize([.439], [.108])])   # sirst_trainvaltest_v1_single_channel mean and std
              # [.418, .447, .571], [.091, .078, .076] iceberg mean and std
              # [.485, .456, .406], [.229, .224, .225] imagenet mean and std
 
-        ######## dataset and dataloader ########
         data_root = args.data_root
         if os.path.exists(data_root) is False:
             raise FileNotFoundError("{} is not found".format(data_root))
@@ -122,15 +157,18 @@ class Trainer(object):
         trainset = SIRST(split=args.train_split, mode='train', **data_kwargs)
         valset = SIRST(split=args.val_split, mode='val', **data_kwargs)
 
+        args.iters_per_epoch = len(trainset) // (len(args.ctx) * args.batch_size)
+        args.max_iters = args.epochs * args.iters_per_epoch
+
 
         self.train_data = DataLoader(trainset, args.batch_size, shuffle=True,
-                                     drop_last=True, num_workers=args.workers)
+                                     drop_last=True, num_workers=args.workers, pin_memory=True)
 
         self.eval_data = DataLoader(valset, args.batch_size, shuffle=False,
-                                     drop_last=True, num_workers=args.workers)
+                                     drop_last=True, num_workers=args.workers, pin_memory=True)
 
         ######## model ########
-        # net_choice = 'PCMNet'   # ResnetFPN, PCMNet, MPCMNet, LayerwiseMPCMNet
+
         net_choice = args.net_choice
         print("net_choice:", net_choice)
 
@@ -145,7 +183,7 @@ class Trainer(object):
 
             model = ALCNet(layers=layers, channels=channels, shift=shift,
                                   pyramid_mode=pyramid_mode, scale_mode=scale_mode, pyramid_fuse=pyramid_fuse,
-                                  r=r, classes=trainset.NUM_CLASSES)
+                                  r=r, classes=1)
 
             print("net_choice:{}\nscale_mode:{}\npyramid_fuse:{}\nr:{}\nlayers:{}\nchannels:{}\nshift:{}\n"
                   .format(net_choice, scale_mode, pyramid_fuse, r, layers, channels, shift))
@@ -182,6 +220,7 @@ class Trainer(object):
         # loss
         self.criterion = SoftIoULoss()
 
+
         # lr_scheduler and optimizer
         optimizer_params = {'wd': args.weight_decay, 'learning_rate': args.lr, 'momentum': args.momentum}
         if args.dtype == 'float16':
@@ -197,17 +236,24 @@ class Trainer(object):
         self.lr_scheduler = LambdaLR(self.optimizer, lr_lambda=lr_lambda)
 
         ######### evaluation metrics #########
-        # self.iou_metric = SigmoidMetric(trainset.NUM_CLASSES)
-        # self.nIoU_metric = SamplewiseSigmoidMetric(1, score_thresh=self.args.score_thresh)
+        self.score_thresh = args.score_thresh
+        self.metric = SegmentationMetric(trainset.num_class())
 
         self.best_metric = 0
         self.best_iou = 0
         self.best_nIoU = 0
         self.is_best = False
 
+        ######## Training detail #########
+        # epochs, max_iters = args.epochs, args.max_iters
+        # log_per_iters, val_per_iters = args.log_iter, args.val_epoch * args.iters_per_epoch
+        # save_per_iters = args.save_epoch * args.iters_per_epoch
+
     def training(self, epoch):
+
         train_loss = 0.0
         tbar = tqdm(self.train_data)
+        self.metric.reset()
 
         self.net.train()
         for i, (images, labels) in enumerate(tbar):
@@ -216,39 +262,68 @@ class Trainer(object):
 
             self.optimizer.zero_grad()
             outputs = self.net(images)
-            loss = self.criterion(outputs, labels)
+            loss = self.criterion(outputs.squeeze(1), labels.float())
             loss.backward()
             self.optimizer.step()
 
-            train_loss += loss
+            train_loss += loss.item()    # loss.item():mean loss of this batch
 
-            tbar.set_description('Epoch: %d, Training loss: %.3f' % (epoch, train_loss / (i + 1)))
+
+
+            ### metrics during training
+            self.metric.update(outputs.detach(), labels.detach())
+            pixAcc, mIoU, nIoU = self.metric.get()
+
+
+            tbar.set_description('Epoch: %d || Training loss: %.4f || Pixacc: %.4f || IoU: %.4f || nIoU: %.4f'
+                                 % (epoch, train_loss / (i + 1), pixAcc, mIoU, nIoU))
+
+            iters = (i + 1) + len(self.train_data) * epoch
+            self.viz.line([train_loss / (i + 1)], [iters], win='train_loss', update='append')
 
 
     def validation(self, epoch):
+
         tbar = tqdm(self.eval_data)
-        iou_metric = IoUMetric(select='IoU')
-        niou_metric = IoUMetric(select='nIoU')
+        self.metric.reset()
+
         batch_iou = []
         batch_niou = []
+        val_loss = 0.0
+
         self.net.eval()
         for i, (images, labels) in enumerate(tbar):
             images = images.to(args.ctx[0])
             labels = labels.to(args.ctx[0])
-            pred = self.net(images)
+            with torch.no_grad():
+                outputs = self.net(images)
 
-            cm = confusion_matrix(pred, labels, threshold=args.score_thresh)
+            loss = self.criterion(outputs.squeeze(1), labels.float())
 
-            iou_metric.add(cm)
-            niou_metric.add(cm)
+            val_loss += loss.item()
 
-            batch_iou.append(iou_metric.value())
-            batch_niou.append(niou_metric.value())
+            # metirc  sigmoid + threshold for a batch images 4D
+            self.metric.update(outputs, labels)
+            pixAcc, mIoU, nIoU = self.metric.get()
 
-        self.iou = sum(batch_iou) / len(batch_iou)
-        self.niou = sum(batch_niou) / len(batch_niou)
+            logger.info("Epoch{:d}batch{:d}, Validation pixAcc: {:.4f}, mIoU: {:.4f}, mIoU: {:.4f}"
+                        .format(epoch, i + 1, pixAcc, mIoU, nIoU))
+            # tbar.set_description('Epoch %d || pixAcc: %.4f || IoU: %.4f || nIoU: %.4f' % (epoch, pixAcc, mIoU, nIoU))
 
-        tbar.set_description('Epoch: %d, IoU: %.3f, nIoU: %.3f' % (epoch, self.iou, self.niou))
+            iters = (i + 1) + len(self.eval_data) * epoch
+            self.viz.line([[pixAcc, mIoU, nIoU]], [iters], win='metrics', update='append')
+
+        ## for all epochs
+        if mIoU > self.best_iou:
+            self.best_iou = mIoU
+
+        if nIoU > self.best_nIoU:
+            self.best_nIoU = nIoU
+
+        if epoch >= args.epochs - 1:
+            print("best_iou: ", self.best_iou)
+            print("best_nIoU: ", self.best_nIoU)
+
 
 
 
@@ -264,6 +339,12 @@ class Trainer(object):
 
 if __name__ == "__main__":
     args = parse_args()
+
+    logger = setup_logger("semantic_segmentation", args.log_dir, filename='{}_{}_log.txt'.format(
+        args.net_choice, args.dataset))
+    logger.info("Using {} GPUs".format(len(args.ctx)))
+    logger.info(args)
+
     trainer = Trainer(args)
     if args.eval:
         print('Evaluating model: ', args.resume)
@@ -273,5 +354,6 @@ if __name__ == "__main__":
         print('Total Epochs:', args.epochs)
         for epoch in range(args.start_epoch, args.epochs):
             trainer.training(epoch)
+            save_checkpoint(trainer.net, args, epoch)
             if not args.no_val:
                 trainer.validation(epoch)
