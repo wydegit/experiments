@@ -1,7 +1,11 @@
 import matplotlib.pyplot as plt
 import re
+import os
 
-def train_visualize(path):
+def train_visualize(path, save_path):
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
     epoch = []
     loss = []
     pattern = r"Epoch(\d+).*?Training loss:([\d.]+)"
@@ -30,10 +34,13 @@ def train_visualize(path):
 
     ax.set_title("Training loss curve")
     # ax.legend()
+    visual_name = os.path.basename(path).split('.')[0]
+    plt.savefig(os.path.join(save_path, visual_name + '.png'))
+    # plt.show()
 
-    plt.show()
-
-def val_visualize(path):
+def val_visualize(path, save_path):
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
     epoch = []
     loss = []
     pixacc = []
@@ -73,4 +80,7 @@ def val_visualize(path):
     ax.plot(epoch, niou, color='c', linestyle='-', marker='.', label='nIoU')
     fig.legend(bbox_to_anchor=(1.04, 1), loc="upper right")
 
-    plt.show()
+
+    visual_name = os.path.basename(path).split('.')[0]
+    plt.savefig(os.path.join(save_path, visual_name + '.png'))
+    # plt.show()

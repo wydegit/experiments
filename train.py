@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument('--score-thresh', type=float, default=0.5, help='score-thresh')
 
     ######## dataset ########
-    parser.add_argument('--data-root', type=str, default='./data/', help='dataset path')
+    parser.add_argument('--data-root', type=str, default='./data/', help='dataset path')   # /content/experiments/data
     parser.add_argument('--dataset', type=str, default='open-sirst-v2', help='dataset name')
     parser.add_argument('--base-size', type=int, default=512, help='base image size')
     parser.add_argument('--crop-size', type=int, default=480, help='crop image size')
@@ -51,8 +51,8 @@ def parse_args():
     parser.add_argument('--val-split', type=str, default='val_v1', help='choice:test, val')
 
     ######## training hyperparameters ########
-    parser.add_argument('--epochs', type=int, default=20, metavar='N', help='number of epochs to train')
-    parser.add_argument('--batch-size', type=int, default=4, metavar='N', help='input batch size for training')
+    parser.add_argument('--epochs', type=int, default=400, metavar='N', help='number of epochs to train')
+    parser.add_argument('--batch-size', type=int, default=10, metavar='N', help='input batch size for training')
     parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 1e-3)')
     parser.add_argument('--lr-decay', type=float, default=0.1, help='decay rate of learning rate')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='momentum')
@@ -71,6 +71,7 @@ def parse_args():
     ######## logging and checkpoint ########
     parser.add_argument('--log-dir', type=str, default='./logs', help='log directory')
     parser.add_argument('--save-dir', type=str, default='./params', help='Directory for saving checkpoint models')
+    parser.add_argument('--visual-dir', type=str, default='./visual', help='Directory for saving visualization images')
     parser.add_argument('--colab', action='store_true', default=False, help='whether using colab')
     parser.add_argument('--resume', type=str, default=None, help='put the path to resuming file if needed')
 
@@ -120,11 +121,6 @@ def save_checkpoint(model, args, epoch, is_best=False):
 
 class Trainer(object):
     def __init__(self, args):
-
-        # self.viz = Visdom()
-        # self.viz.line([0.], [0.], win='train_loss', opts=dict(title='train loss'))
-        # self.viz.line([[0., 0., 0.,]], [0.], win='metrics', opts=dict(title='metrics', legend=['pixAcc', 'mIoU', 'nIoU']))
-
 
         ######## dataset and dataloader ########
         input_transform = transforms.Compose(
@@ -320,6 +316,14 @@ class Trainer(object):
 if __name__ == "__main__":
     args = parse_args()
 
+    ######## enviroment ########
+    if args.colab:
+        args.data_root = '/content/experiments/data'
+        args.log_dir = '/content/MyDrive/experimentsresult/logs'
+        args.save_dir = '/content/MyDrive/experimentsresult/params'
+        args.visual_dir = '/content/MyDrive/experimentsresult/visual'
+
+    ######## logger ########
     train_log = '{}_{}_'.format(args.net_choice, args.dataset) + datetime.now().strftime('%Y%m%d_%H%M') + '_train_log.txt'
     train_logger = setup_logger("training process", args.log_dir, filename=train_log)
     train_logger.info("Using {} GPUs".format(len(args.ctx)))
@@ -331,6 +335,7 @@ if __name__ == "__main__":
     val_logger.info(args)
 
 
+    ######## training ########
     trainer = Trainer(args)
     if args.eval:
         print('Evaluating model: ', args.resume)
@@ -344,12 +349,12 @@ if __name__ == "__main__":
                 trainer.validation(epoch)
         # visualize training and eval metrics
         if os.path.exists(os.path.join(args.log_dir, train_log)):
-            train_visualize(os.path.join(args.log_dir, train_log))
+            train_visualize(os.path.join(args.log_dir, train_log), args.visual_dir)
         else:
             raise ValueError("train_log is not found")
 
         if os.path.exists(os.path.join(args.log_dir, val_log)):
-            val_visualize(os.path.join(args.log_dir, val_log))
+            val_visualize(os.path.join(args.log_dir, val_log), args.visual_dir)
         else:
             raise ValueError("val_log is not found")
 
