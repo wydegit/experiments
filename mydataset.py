@@ -175,3 +175,4 @@ class SIRST(Dataset):
     def num_class(self):
         """Number of categories."""
         return self.NUM_CLASSES
+

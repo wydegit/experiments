@@ -22,7 +22,7 @@ def setup_logger(name, save_dir, distributed_rank=0, filename="log.txt", mode='w
     if save_dir:
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        fh = logging.FileHandler(os.path.join(save_dir, filename), mode=mode)  # 'a+' for add, 'w' for overwrite
+        fh = logging.FileHandler(os.path.join(save_dir, filename), mode=mode, delay=False)  # 'a+' for add, 'w' for overwrite
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
         logger.addHandler(fh)

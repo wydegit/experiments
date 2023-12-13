@@ -17,7 +17,7 @@ from logger import setup_logger
 from tqdm import tqdm
 import shutil
 from datetime import datetime
-from visualize import train_visualize, val_visualize
+from visualize import train_visualize, val_visualize, plot_img_and_mask
 
 
 
@@ -49,6 +49,7 @@ def parse_args():
     parser.add_argument('--workers', type=int, default=1, metavar='N', help='dataloader threads')
     parser.add_argument('--train-split', type=str, default='train_v1', help='choice:train, trainval')
     parser.add_argument('--val-split', type=str, default='val_v1', help='choice:test, val')
+    parser.add_argument('--test-split', type=str, default='test_v1', help='choice:test, val')
 
     ######## training hyperparameters ########
     parser.add_argument('--epochs', type=int, default=400, metavar='N', help='number of epochs to train')
@@ -66,12 +67,15 @@ def parse_args():
     parser.add_argument('--no-val', action='store_true', default=False, help='skip validation during training')
 
     ######## testing hyperparameters ########
-    parser.add_argument('--test-batch-size', type=int, default=32, metavar='N', help='input batch size for testing')
+    parser.add_argument('--predict', default=False, action='store_true', help='test model')
+    parser.add_argument('--predict-checkpoint', type=str, default='./params/ALCNet_open-sirst-v2_265.pth',
+                        help='.pth used in model predict')
 
     ######## logging and checkpoint ########
     parser.add_argument('--log-dir', type=str, default='./logs', help='log directory')
     parser.add_argument('--save-dir', type=str, default='./params', help='Directory for saving checkpoint models')
     parser.add_argument('--visual-dir', type=str, default='./visual', help='Directory for saving visualization images')
+    parser.add_argument('--visual-img', default=False, action='store_true', help='whether to visualize images')
     parser.add_argument('--colab', action='store_true', default=False, help='whether using colab')
     parser.add_argument('--resume', type=str, default=None, help='put the path to resuming file if needed')
 
@@ -119,6 +123,7 @@ def save_checkpoint(model, args, epoch, is_best=False):
 
 
 
+
 class Trainer(object):
     def __init__(self, args):
 
@@ -143,6 +148,7 @@ class Trainer(object):
 
         trainset = SIRST(split=args.train_split, mode='train', **data_kwargs)
         valset = SIRST(split=args.val_split, mode='val', **data_kwargs)
+        testset = SIRST(split=args.test_split, mode='testval', **data_kwargs)
 
         # args.iters_per_epoch = len(trainset) // (len(args.ctx) * args.batch_size)
         # args.max_iters = args.epochs * args.iters_per_epoch
@@ -153,9 +159,9 @@ class Trainer(object):
         self.eval_data = DataLoader(valset, args.batch_size, shuffle=False,
                                      drop_last=False, num_workers=args.workers, pin_memory=True)
 
+        self.test_data = testset
 
         ######## model ########
-
         net_choice = args.net_choice
         print("net_choice:", net_choice)
 
@@ -303,6 +309,43 @@ class Trainer(object):
             print("best_nIoU: ", self.best_nIoU)
 
 
+    def predict(self):
+        tbar = tqdm(self.test_data)
+        self.metric.reset()
+
+        for i, (images, labels) in enumerate(tbar):
+            images = images.to(args.ctx[0])
+            labels = labels.to(args.ctx[0])
+            with torch.no_grad():
+                self.net.load_state_dict(torch.load(args.predict_checkpoint))
+                outputs = self.net(images.unsqueeze(0))
+
+
+            # metirc  sigmoid + threshold for a batch images 4D
+            self.metric.update(outputs, labels.unsqueeze(0))
+
+            # if args.visual_img:
+            #     img = images[0].cpu().numpy()
+            #     label = labels.cpu().numpy()
+            #     output = nn.functional.sigmoid(outputs.squeeze(1)[0]).cpu().numpy()
+            #     output = (output > self.score_thresh).astype(np.int64)
+            #     plot_img_and_mask(img, label, output, './visual')
+
+        pixAcc, mIoU, nIoU = self.metric.get()
+        tbar.set_description('pixAcc: %.4f || IoU: %.4f || nIoU: %.4f'
+                             % (pixAcc, mIoU, nIoU))
+        test_logger.info("pixAcc:{:.4f}  mIoU:{:.4f}  nIoU:{:.4f}"
+                        .format(pixAcc, mIoU, nIoU))
+
+        if args.visual_img:
+            img = images[0].cpu().numpy()
+            label = labels.cpu().numpy()
+            output = nn.functional.sigmoid(outputs.squeeze(1)[0]).cpu().numpy()
+            output = (output > self.score_thresh).astype(np.int64)
+
+        return img, label, output
+
+
     def init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -313,40 +356,41 @@ class Trainer(object):
 
 
 
+
 if __name__ == "__main__":
     args = parse_args()
 
     ######## enviroment ########
     if args.colab:
         args.data_root = '/content/experiments/data'
-        args.log_dir = '/content/MyDrive/experimentsresult/logs'
-        args.save_dir = '/content/MyDrive/experimentsresult/params'
-        args.visual_dir = '/content/MyDrive/experimentsresult/visual'
+        args.log_dir = '/content/drive/MyDrive/experimentsresult/logs'
+        args.save_dir = '/content/drive/MyDrive/experimentsresult/params'
+        args.visual_dir = '/content/drive/MyDrive/experimentsresult/visual'
 
-    ######## logger ########
-    train_log = '{}_{}_'.format(args.net_choice, args.dataset) + datetime.now().strftime('%Y%m%d_%H%M') + '_train_log.txt'
-    train_logger = setup_logger("training process", args.log_dir, filename=train_log)
-    train_logger.info("Using {} GPUs".format(len(args.ctx)))
-    train_logger.info(args)
-
-    val_log = '{}_{}_'.format(args.net_choice, args.dataset) + datetime.now().strftime('%Y%m%d_%H%M') + '_val_log.txt'
-    val_logger = setup_logger("validation process", args.log_dir, filename=val_log)
-    val_logger.info("Using {} GPUs".format(len(args.ctx)))
-    val_logger.info(args)
-
-
-    ######## training ########
+    # ######## training ########
     trainer = Trainer(args)
     if args.eval:
         print('Evaluating model: ', args.resume)
         trainer.validation(args.start_epoch)
     else:
         print('Total Epochs:', args.epochs)
+        ## logger create
+        train_log = '{}_{}_'.format(args.net_choice, args.dataset) + '_train_log.txt'
+        train_logger = setup_logger("training process", args.log_dir, filename=train_log)
+        train_logger.info("Using {} GPUs".format(len(args.ctx)))
+        train_logger.info(args)
+
         for epoch in range(args.epochs):
             trainer.training(epoch)
             save_checkpoint(trainer.net, args, epoch)
             if not args.no_val:
+                ## logger create
+                val_log = '{}_{}_'.format(args.net_choice, args.dataset) + '_val_log.txt'
+                val_logger = setup_logger("validation process", args.log_dir, filename=val_log)
+                val_logger.info("Using {} GPUs".format(len(args.ctx)))
+                val_logger.info(args)
                 trainer.validation(epoch)
+
         # visualize training and eval metrics
         if os.path.exists(os.path.join(args.log_dir, train_log)):
             train_visualize(os.path.join(args.log_dir, train_log), args.visual_dir)
@@ -358,6 +402,11 @@ if __name__ == "__main__":
         else:
             raise ValueError("val_log is not found")
 
+    if args.predict:
+        test_log = '{}_'.format(os.path.basename(args.predict_checkpoint).split('.')[0]) + 'epoch_test_log.txt'
+        test_logger = setup_logger("testing process", args.log_dir, filename=test_log)
+        img, label, predict = trainer.predict()
+        plot_img_and_mask(img, label, predict, args.visual_dir)
 
 
 

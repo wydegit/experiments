@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import re
 import os
-
+import numpy as np
 def train_visualize(path, save_path):
     if not os.path.exists(save_path):
         os.makedirs(save_path)
@@ -35,8 +35,8 @@ def train_visualize(path, save_path):
     ax.set_title("Training loss curve")
     # ax.legend()
     visual_name = os.path.basename(path).split('.')[0]
-    plt.savefig(os.path.join(save_path, visual_name + '.png'))
-    # plt.show()
+    fig.savefig(os.path.join(save_path, visual_name + '.png'))
+    fig.show()
 
 def val_visualize(path, save_path):
     if not os.path.exists(save_path):
@@ -83,4 +83,42 @@ def val_visualize(path, save_path):
 
     visual_name = os.path.basename(path).split('.')[0]
     plt.savefig(os.path.join(save_path, visual_name + '.png'))
-    # plt.show()
+    plt.show()
+
+
+def plot_img_and_mask(img, label, output, save_path):
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+    fig, ax = plt.subplots(1, 3)
+    fig.set_size_inches(8, 6)
+    plt.rc('font', family='Times New Roman')
+    plt.rc('mathtext', fontset='stix')
+
+    ax[0].imshow(img, cmap='gray')
+    ax[0].set_title("Input image")
+
+    ax[1].imshow(label, cmap='gray')
+    ax[1].set_title("Ground truth")
+
+    ax[2].imshow(output, cmap='gray')
+    ax[2].set_title("Prediction")
+
+    for a in ax:
+        a.set_xticks([])
+        a.set_yticks([])
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_path, 'predict.png'))
+    plt.show()
+
+
+
+
+if __name__ == "__main__":
+    dir = r'D:/wang/colabresults/'
+    train_name = 'ALCNet_open-sirst-v2_20231213_0434_train_log.txt'
+    val_name = 'ALCNet_open-sirst-v2_20231213_0434_val_log.txt'
+
+    train_visualize(os.path.join(dir + train_name), dir)
+    val_visualize(os.path.join(dir + val_name), dir)
