@@ -216,32 +216,7 @@ class SoftIoULoss(nn.Module):
 
 
 
-def validation(self):
-    # total_inter, total_union, total_correct, total_label = 0, 0, 0, 0
-    is_best = False
-    self.metric.reset()
-    if self.args.distributed:
-        model = self.model.module
-    else:
-        model = self.model
-    torch.cuda.empty_cache()  # TODO check if it helps
-    model.eval()
-    for i, (image, target, filename) in enumerate(self.val_loader):
-        image = image.to(self.device)
-        target = target.to(self.device)
 
-        with torch.no_grad():
-            outputs = model(image)
-        self.metric.update(outputs[0], target)
-        pixAcc, mIoU = self.metric.get()
-        logger.info("Sample: {:d}, Validation pixAcc: {:.3f}, mIoU: {:.3f}".format(i + 1, pixAcc, mIoU))
-
-    new_pred = (pixAcc + mIoU) / 2
-    if new_pred > self.best_pred:
-        is_best = True
-        self.best_pred = new_pred
-    save_checkpoint(self.model, self.args, is_best)
-    synchronize()
 
 
 
