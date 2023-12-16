@@ -8,8 +8,9 @@ from torchinfo import summary
 from torchvision import transforms
 from torch.utils.data import DataLoader
 import torch.optim as optim
-from torch.optim.lr_scheduler import LambdaLR
-from model import ALCNet
+from torch.optim.lr_scheduler import PolynomialLR
+from module import Backbone
+from model import ALCNet, FPN, FCN, UNet
 from mydataset import SIRST
 from loss import SoftIoULoss
 from metric import SegmentationMetric
@@ -21,6 +22,7 @@ from visualize import train_visualize, val_visualize, plot_img_and_mask
 
 
 
+
 def parse_args():
     """
     Training option and segmentation experiments
@@ -29,16 +31,16 @@ def parse_args():
     parser = argparse.ArgumentParser(description='alcnet pytorch')
 
     ######## model ########
-    parser.add_argument('--net-choice', type=str, default='ALCNet', help='model')
-    parser.add_argument('--summary', action='store_true', default=False, help='print model summary')
+    parser.add_argument('--net-choice', type=str, default='UNet', help='model')
+    parser.add_argument('--summary', action='store_true', default=True, help='print model summary')
 
     parser.add_argument('--blocks', type=int, default=4, help='[1] * ResnetBasicBlocks')
     parser.add_argument('--channels', type=int, default=16, help='stem channels')
-    parser.add_argument('--shift', type=int, default=13, help='lcm shift')
-    parser.add_argument('--r', type=int, default=2, help='choice:1,2,4')
-    parser.add_argument('--pyramid-mode', type=str, default='Dec', help='Inc,Dec')
-    parser.add_argument('--scale-mode', type=str, default='Multiple', help='choice:Single, Multiple, Selective')
-    parser.add_argument('--pyramid-fuse', type=str, default='bottomuplocal', help='choice:add, max, sk')
+    # parser.add_argument('--shift', type=int, default=13, help='lcm shift')
+    # parser.add_argument('--r', type=int, default=2, help='choice:1,2,4')
+    # parser.add_argument('--pyramid-mode', type=str, default='Dec', help='Inc,Dec')
+    # parser.add_argument('--scale-mode', type=str, default='Multiple', help='choice:Single, Multiple, Selective')
+    # parser.add_argument('--pyramid-fuse', type=str, default='bottomuplocal', help='choice:add, max, sk')
     parser.add_argument('--score-thresh', type=float, default=0.5, help='score-thresh')
 
     ######## dataset ########
@@ -47,15 +49,15 @@ def parse_args():
     parser.add_argument('--base-size', type=int, default=512, help='base image size')
     parser.add_argument('--crop-size', type=int, default=480, help='crop image size')
     parser.add_argument('--workers', type=int, default=1, metavar='N', help='dataloader threads')
-    parser.add_argument('--train-split', type=str, default='train_v1', help='choice:train, trainval')
-    parser.add_argument('--val-split', type=str, default='val_v1', help='choice:test, val')
+    parser.add_argument('--train-split', type=str, default='trainval_v1', help='choice:train, trainval')
+    parser.add_argument('--val-split', type=str, default='test_v1', help='choice:test, val')
     parser.add_argument('--test-split', type=str, default='test_v1', help='choice:test, val')
 
     ######## training hyperparameters ########
     parser.add_argument('--epochs', type=int, default=400, metavar='N', help='number of epochs to train')
-    parser.add_argument('--batch-size', type=int, default=10, metavar='N', help='input batch size for training')
-    parser.add_argument('--lr', type=float, default=0.1, metavar='LR', help='learning rate (default: 1e-3)')
-    parser.add_argument('--lr-decay', type=float, default=0.1, help='decay rate of learning rate')
+    parser.add_argument('--batch-size', type=int, default=2, metavar='N', help='input batch size for training')
+    parser.add_argument('--lr', type=float, default=0.05, metavar='LR', help='learning rate (default: 1e-3)')   # 0.1
+    # parser.add_argument('--lr-decay', type=float, default=0.1, help='decay rate of learning rate')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='momentum')
     parser.add_argument('--weight-decay', type=float, default=1e-4, metavar='M',
                         help='weight decay for loss regularization')
@@ -165,23 +167,26 @@ class Trainer(object):
         net_choice = args.net_choice
         print("net_choice:", net_choice)
 
+        layers = [args.blocks] * 3
+        channels = [8, 16, 32, 64]
+
+        backbone = Backbone(layers, channels)
+
         if net_choice == 'ALCNet':
-            r = args.r
-            layers = [args.blocks] * 3    # 3 stage, each stage has args.blocks(4) resnet basic blocks
-            channels = [8, 16, 32, 64]
-            shift = args.shift
-            pyramid_mode = args.pyramid_mode
-            scale_mode = args.scale_mode
-            pyramid_fuse = args.pyramid_fuse
+            self.net = ALCNet(backbone)
 
-            model = ALCNet(layers=layers, channels=channels, shift=shift,
-                                  pyramid_mode=pyramid_mode, scale_mode=scale_mode, pyramid_fuse=pyramid_fuse,
-                                  r=r, classes=1)
+        elif net_choice == 'FPN':
+            self.net = FPN(backbone)
 
-            print("net_choice:{}\nscale_mode:{}\npyramid_fuse:{}\nr:{}\nlayers:{}\nchannels:{}\nshift:{}\n"
-                  .format(net_choice, scale_mode, pyramid_fuse, r, layers, channels, shift))
+        elif net_choice == 'FCN':
+            self.net = FCN(backbone, fuse=True)
+
+        elif net_choice == 'UNet':
+            self.net = UNet(backbone)
+
         else:
             raise ValueError('Unknown net_choice: {}'.format(net_choice))
+
 
         # self.host_name = socket.gethostname()
         # self.save_prefix = self.host_name + '_' + net_choice + '_scale-mode_' + args.scale_mode + \
@@ -190,12 +195,12 @@ class Trainer(object):
         # if args.net_choice == 'ResNetFCN':
         #    self.save_prefix = self.host_name + '_' + net_choice + '_b_' + str(args.blocks)
 
-        self.net = model
-        # resume checkpoint if needed 加载权重否则初始化
+
+        # resume checkpoint if needed
         if args.resume is not None:
             if os.path.isfile(args.resume):
                 print("=> loading checkpoint '{}'".format(args.resume))
-                self.net.load_state_dict(torch.load(args.resume))  # checkpoint->state_dict->weights  args.ctx?
+                self.net.load_state_dict(torch.load(args.resume))  # checkpoint->state_dict->weights
             else:
                 raise RuntimeError("=> no checkpoint found at '{}'".format(args.resume))
 
@@ -218,16 +223,21 @@ class Trainer(object):
         optimizer_params = {'wd': args.weight_decay, 'learning_rate': args.lr, 'momentum': args.momentum}
         if args.dtype == 'float16':
             optimizer_params['multi_precision'] = True
-        if args.no_wd:   # impact of args.no_wd ?
+        if args.no_wd:   # impact of args.no_wd
             for key, value in self.net.params('.*beta|.*gamma|.*bias').items():
                 value.wd_mult = 0.0
 
-        self.optimizer = optim.Adagrad(self.net.parameters(), lr=optimizer_params['learning_rate'],
-                                       weight_decay=optimizer_params['wd'])
+        # Adagrad
+        # self.optimizer = optim.Adagrad(self.net.parameters(), lr=optimizer_params['learning_rate'],
+        #                                weight_decay=optimizer_params['wd'])
 
-        lr_lambda = lambda epoch: 1 - (epoch / args.epochs) ** 0.9   # user defined lr_scheduler
-        self.lr_scheduler = LambdaLR(self.optimizer, lr_lambda=lr_lambda)
+        # SGD
+        self.optimizer = optim.SGD(self.net.parameters(), lr=optimizer_params['learning_rate'],
+                                   weight_decay=optimizer_params['wd'], momentum=optimizer_params['momentum'])
 
+        # lr_lambda = lambda epoch: 1 - (epoch / args.epochs) ** 0.9   # user defined lr_scheduler
+        # self.lr_scheduler = LambdaLR(self.optimizer, lr_lambda=lr_lambda)
+        self.lr_scheduler = PolynomialLR(self.optimizer, total_iters=len(trainset) * args.epochs, power=0.9)
 
         ######### evaluation metrics #########
         self.score_thresh = args.score_thresh
@@ -309,7 +319,7 @@ class Trainer(object):
             print("best_nIoU: ", self.best_nIoU)
 
 
-    def predict(self):
+    def predict(self, visual_dir):
         tbar = tqdm(self.test_data)
         self.metric.reset()
 
@@ -324,26 +334,20 @@ class Trainer(object):
             # metirc  sigmoid + threshold for a batch images 4D
             self.metric.update(outputs, labels.unsqueeze(0))
 
-            # if args.visual_img:
-            #     img = images[0].cpu().numpy()
-            #     label = labels.cpu().numpy()
-            #     output = nn.functional.sigmoid(outputs.squeeze(1)[0]).cpu().numpy()
-            #     output = (output > self.score_thresh).astype(np.int64)
-            #     plot_img_and_mask(img, label, output, './visual')
+
+            if args.visual_img:
+                img = images[0].cpu().numpy()
+                label = labels.cpu().numpy()
+                output = nn.functional.sigmoid(outputs.squeeze(1)[0]).cpu().numpy()
+                output = (output > self.score_thresh).astype(np.int64)
+                plot_img_and_mask(img, label, output, visual_dir)
+
 
         pixAcc, mIoU, nIoU = self.metric.get()
         tbar.set_description('pixAcc: %.4f || IoU: %.4f || nIoU: %.4f'
                              % (pixAcc, mIoU, nIoU))
         test_logger.info("pixAcc:{:.4f}  mIoU:{:.4f}  nIoU:{:.4f}"
                         .format(pixAcc, mIoU, nIoU))
-
-        if args.visual_img:
-            img = images[0].cpu().numpy()
-            label = labels.cpu().numpy()
-            output = nn.functional.sigmoid(outputs.squeeze(1)[0]).cpu().numpy()
-            output = (output > self.score_thresh).astype(np.int64)
-
-        return img, label, output
 
 
     def init_weights(self, m):
@@ -405,8 +409,8 @@ if __name__ == "__main__":
     if args.predict:
         test_log = '{}_'.format(os.path.basename(args.predict_checkpoint).split('.')[0]) + 'epoch_test_log.txt'
         test_logger = setup_logger("testing process", args.log_dir, filename=test_log)
-        img, label, predict = trainer.predict()
-        plot_img_and_mask(img, label, predict, args.visual_dir)
+        trainer.predict(args.visual_dir)
+
 
 
 
