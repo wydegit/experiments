@@ -47,7 +47,7 @@ class PCMLayer(nn.Module):
         cyclic shift compute for MPCM
         take each shift part and concatenate them according to the direction
         :param cen: center feature map  b*c*h*w
-        :param shift: shift size
+        :param shift: shift size (11/13/17)
         :return:
         """
         _, _, h, w = self.cen.shape

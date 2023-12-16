@@ -2,14 +2,14 @@ import torch
 import torch.nn as nn
 from torchvision.models.resnet import BasicBlock
 
-class backbone(nn.Module):
+class Backbone(nn.Module):
     """
     defalut Resnet backbone
     layers = [args.blocks] * stage_num , the num of basickblock/bottleneck in each stage
     stage_num  default:3
     """
     def __init__(self, layers, channels):
-        super(backbone, self).__init__()
+        super(Backbone, self).__init__()
 
         # 1->16
         self.conv1 = nn.Conv2d(1, channels[0] * 2, kernel_size=3, stride=1, padding=1, bias=False)
@@ -111,7 +111,7 @@ class BLAM(nn.Module):
 
         self.conv1 = nn.Conv2d(channels, inter_channels, kernel_size=1, stride=1, padding=0)
         self.bn1 = nn.BatchNorm2d(inter_channels)
-        self.conv2 = nn.Conv2d(inter_channels, channels, kernel_size=1, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(inter_channels, channels, kernel_size=1, stride=1, padding=0)
         self.bn2 = nn.BatchNorm2d(channels)
 
         self.relu = nn.ReLU(inplace=True)

@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.segmentation.fcn import FCNHead
-from module import backbone, BLAM, BGAM, add, concat
+from module import BLAM, BGAM, add, concat
 from combine import PCMLayer
 
 
@@ -16,7 +16,7 @@ class ALCNet(nn.Module):
         super(ALCNet, self).__init__()
 
         self.backbone = backbone
-        self.same_layer = same_layer
+        self.same_layer = same_layer(mpcm=True)
         self.cross_layer = cross_layer(channels=16)
 
         layers = backbone.layers
@@ -27,22 +27,22 @@ class ALCNet(nn.Module):
         ## fuse_process: 1*1 conv+bn+relu to equalize channels num
         if fuse_direction == 'Dec':
             self.conv1 = nn.Conv2d(channels[layers_num[1]], channels[layers_num[0]], kernel_size=1, stride=1,
-                                   padding=1, bias=False) # 32->16
+                                   padding=0, bias=False) # 32->16
             self.bn1 = nn.BatchNorm2d(channels[layers_num[0]])
 
             self.conv2 = nn.Conv2d(channels[layers_num[2]], channels[layers_num[0]], kernel_size=1, stride=1,
-                                   padding=1, bias=False) # 64->16
+                                   padding=0, bias=False) # 64->16
             self.bn2 = nn.BatchNorm2d(channels[layers_num[0]])
 
             self.relu = nn.ReLU(inplace=True)
 
         elif fuse_direction == 'Inc':
             self.conv1 = nn.Conv2d(channels[layers_num[-2]], channels[layers_num[-1]], kernel_size=1, stride=1,
-                                   padding=1, bias=False)
+                                   padding=0, bias=False)
             self.bn1 = nn.BatchNorm2d(channels[layers_num[-1]])
 
             self.conv2 = nn.Conv2d(channels[layers_num[-3]], channels[layers_num[-1]], kernel_size=1, stride=1,
-                                   padding=1, bias=False)
+                                   padding=0, bias=False)
             self.bn2 = nn.BatchNorm2d(channels[layers_num[-1]])
 
             self.relu = nn.ReLU(inplace=True)
@@ -99,22 +99,22 @@ class FPN(nn.Module):
         ## fuse_process: 1*1 conv+bn+relu to equalize channels num
         if fuse_direction == 'Dec':  # outchannels->first(16)
             self.conv1 = nn.Conv2d(channels[layers_num[1]], channels[layers_num[0]], kernel_size=1, stride=1,
-                                   padding=1, bias=False)  # 32->16
+                                   padding=0, bias=False)  # 32->16
             self.bn1 = nn.BatchNorm2d(channels[layers_num[0]])
 
             self.conv2 = nn.Conv2d(channels[layers_num[2]], channels[layers_num[0]], kernel_size=1, stride=1,
-                                   padding=1, bias=False)  # 64->16
+                                   padding=0, bias=False)  # 64->16
             self.bn2 = nn.BatchNorm2d(channels[layers_num[0]])
 
             self.relu = nn.ReLU(inplace=True)
 
         elif fuse_direction == 'Inc': # outchannels->last(64)
             self.conv1 = nn.Conv2d(channels[layers_num[-2]], channels[layers_num[-1]], kernel_size=1, stride=1,
-                                   padding=1, bias=False)
+                                   padding=0, bias=False)
             self.bn1 = nn.BatchNorm2d(channels[layers_num[-1]])
 
             self.conv2 = nn.Conv2d(channels[layers_num[-3]], channels[layers_num[-1]], kernel_size=1, stride=1,
-                                   padding=1, bias=False)
+                                   padding=0, bias=False)
             self.bn2 = nn.BatchNorm2d(channels[layers_num[-1]])
 
             self.relu = nn.ReLU(inplace=True)
@@ -190,13 +190,13 @@ class FCN(nn.Module):
             c23 = self.cross_layer(c2_predict, c3_predict) # 240*240*1
             c23_up = F.interpolate(c23, size=(c1_h, c1_w), mode='bilinear') # 240*240*1->480*480*1
 
-            c1_predict = self.head(c1)  # 480*480*16->480*480*1
+            c1_predict = self.head1(c1)  # 480*480*16->480*480*1
 
             out = self.cross_layer(c23_up, c1_predict)
             out = F.interpolate(out, size=(orig_h, orig_w), mode='bilinear')
 
         else:
-            pred = self.head(c3)  #
+            pred = self.head3(c3)  #
             out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear')
 
         return out
@@ -228,6 +228,8 @@ class UNet(nn.Module):
         self.bn2 = nn.BatchNorm2d(channels[layers_num[0]])
         self.relu = nn.ReLU(inplace=True)
 
+        self.head = FCNHead(channels[1], channels=classes)
+
     def forward(self, x):
         _, _, orig_h, orig_w = x.shape  # 512*512*1
 
@@ -239,12 +241,12 @@ class UNet(nn.Module):
         c3_up = F.interpolate(c3, size=(c2_h, c2_w), mode='bilinear')  #240*240*64
         c3_up = self.relu(self.bn1(self.conv1(c3_up)))  # 240*240*32
 
-        c23_cat = self.cross_layer(c3_up, c2)  # 240*240*32
+        c23_cat = self.cross_layer1(c3_up, c2)  # 240*240*32
 
         c23_up = F.interpolate(c23_cat, size=(c1_h, c1_w), mode='bilinear') # 480*480*32
         c23_up = self.relu(self.bn2(self.conv2(c23_up)))  # 480*480*16
 
-        c123_cat = self.cross_layer(c23_up, c1) # 480*480*16
+        c123_cat = self.cross_layer2(c23_up, c1) # 480*480*16
 
         pred = self.head(c123_cat)
         out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear')
