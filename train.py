@@ -31,10 +31,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description='alcnet pytorch')
 
     ######## model ########
-    parser.add_argument('--net-choice', type=str, default='UNet', help='model')
-    parser.add_argument('--summary', action='store_true', default=True, help='print model summary')
+    parser.add_argument('--net-choice', type=str, default='ALCNet', help='model')
+    parser.add_argument('--summary', action='store_true', default=False, help='print model summary')
 
-    parser.add_argument('--blocks', type=int, default=4, help='[1] * ResnetBasicBlocks')
+    parser.add_argument('--blocks', type=int, default=3, help='[1] * ResnetBasicBlocks')
     parser.add_argument('--channels', type=int, default=16, help='stem channels')
     # parser.add_argument('--shift', type=int, default=13, help='lcm shift')
     # parser.add_argument('--r', type=int, default=2, help='choice:1,2,4')
@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument('--test-split', type=str, default='test_v1', help='choice:test, val')
 
     ######## training hyperparameters ########
-    parser.add_argument('--epochs', type=int, default=400, metavar='N', help='number of epochs to train')
+    parser.add_argument('--epochs', type=int, default=100, metavar='N', help='number of epochs to train')
     parser.add_argument('--batch-size', type=int, default=2, metavar='N', help='input batch size for training')
     parser.add_argument('--lr', type=float, default=0.05, metavar='LR', help='learning rate (default: 1e-3)')   # 0.1
     # parser.add_argument('--lr-decay', type=float, default=0.1, help='decay rate of learning rate')
@@ -228,16 +228,16 @@ class Trainer(object):
                 value.wd_mult = 0.0
 
         # Adagrad
-        # self.optimizer = optim.Adagrad(self.net.parameters(), lr=optimizer_params['learning_rate'],
-        #                                weight_decay=optimizer_params['wd'])
+        self.optimizer = optim.Adagrad(self.net.parameters(), lr=optimizer_params['learning_rate'],
+                                       weight_decay=optimizer_params['wd'])
 
         # SGD
-        self.optimizer = optim.SGD(self.net.parameters(), lr=optimizer_params['learning_rate'],
-                                   weight_decay=optimizer_params['wd'], momentum=optimizer_params['momentum'])
+        # self.optimizer = optim.SGD(self.net.parameters(), lr=optimizer_params['learning_rate'],
+        #                            weight_decay=optimizer_params['wd'], momentum=optimizer_params['momentum'])
 
         # lr_lambda = lambda epoch: 1 - (epoch / args.epochs) ** 0.9   # user defined lr_scheduler
         # self.lr_scheduler = LambdaLR(self.optimizer, lr_lambda=lr_lambda)
-        self.lr_scheduler = PolynomialLR(self.optimizer, total_iters=len(trainset) * args.epochs, power=0.9)
+        self.lr_scheduler = PolynomialLR(self.optimizer, total_iters=len(trainset) * args.epochs, power=1.5)
 
         ######### evaluation metrics #########
         self.score_thresh = args.score_thresh
@@ -264,6 +264,8 @@ class Trainer(object):
 
         self.net.train()
         for i, (images, labels) in enumerate(tbar):
+            torch.cuda.empty_cache()
+
             images = images.to(args.ctx[0])
             labels = labels.to(args.ctx[0])
 
@@ -383,16 +385,14 @@ if __name__ == "__main__":
         train_logger = setup_logger("training process", args.log_dir, filename=train_log)
         train_logger.info("Using {} GPUs".format(len(args.ctx)))
         train_logger.info(args)
-
+        val_log = '{}_{}_'.format(args.net_choice, args.dataset) + '_val_log.txt'
+        val_logger = setup_logger("validation process", args.log_dir, filename=val_log)
+        val_logger.info("Using {} GPUs".format(len(args.ctx)))
+        val_logger.info(args)
         for epoch in range(args.epochs):
             trainer.training(epoch)
             save_checkpoint(trainer.net, args, epoch)
             if not args.no_val:
-                ## logger create
-                val_log = '{}_{}_'.format(args.net_choice, args.dataset) + '_val_log.txt'
-                val_logger = setup_logger("validation process", args.log_dir, filename=val_log)
-                val_logger.info("Using {} GPUs".format(len(args.ctx)))
-                val_logger.info(args)
                 trainer.validation(epoch)
 
         # visualize training and eval metrics
