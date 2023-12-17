@@ -46,8 +46,8 @@ def parse_args():
     ######## dataset ########
     parser.add_argument('--data-root', type=str, default='./data/', help='dataset path')   # /content/experiments/data
     parser.add_argument('--dataset', type=str, default='open-sirst-v2', help='dataset name')
-    parser.add_argument('--base-size', type=int, default=512, help='base image size')
-    parser.add_argument('--crop-size', type=int, default=480, help='crop image size')
+    parser.add_argument('--base-size', type=int, default=256, help='base image size')  # 512
+    parser.add_argument('--crop-size', type=int, default=256, help='crop image size')  # 480
     parser.add_argument('--workers', type=int, default=1, metavar='N', help='dataloader threads')
     parser.add_argument('--train-split', type=str, default='trainval_v1', help='choice:train, trainval')
     parser.add_argument('--val-split', type=str, default='test_v1', help='choice:test, val')
@@ -55,7 +55,7 @@ def parse_args():
 
     ######## training hyperparameters ########
     parser.add_argument('--epochs', type=int, default=100, metavar='N', help='number of epochs to train')
-    parser.add_argument('--batch-size', type=int, default=2, metavar='N', help='input batch size for training')
+    parser.add_argument('--batch-size', type=int, default=64, metavar='N', help='input batch size for training')
     parser.add_argument('--lr', type=float, default=0.05, metavar='LR', help='learning rate (default: 1e-3)')   # 0.1
     # parser.add_argument('--lr-decay', type=float, default=0.1, help='decay rate of learning rate')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='momentum')
@@ -237,7 +237,7 @@ class Trainer(object):
 
         # lr_lambda = lambda epoch: 1 - (epoch / args.epochs) ** 0.9   # user defined lr_scheduler
         # self.lr_scheduler = LambdaLR(self.optimizer, lr_lambda=lr_lambda)
-        self.lr_scheduler = PolynomialLR(self.optimizer, total_iters=len(trainset) * args.epochs, power=1.5)
+        self.lr_scheduler = PolynomialLR(self.optimizer, total_iters=len(trainset) * args.epochs, power=1)
 
         ######### evaluation metrics #########
         self.score_thresh = args.score_thresh
