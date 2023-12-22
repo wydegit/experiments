@@ -1,7 +1,7 @@
 import torch.nn as nn
 
 class SoftIoULoss(nn.Module):
-    def __init__(self, smooth=.1):
+    def __init__(self, smooth=1):  # smooth=.1
         """
         custom loss function -- SoftIoU Loss
         """
@@ -24,7 +24,7 @@ class SoftIoULoss(nn.Module):
         # sets_sum = torch.where(sets_sum == 0, inter, sets_sum)
 
         loss = (inter + self.smooth) / (pred + target - inter + self.smooth)
-        loss = (1 - loss).mean()
+        loss = 1 - loss.mean()
 
         return loss
 

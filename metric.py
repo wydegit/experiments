@@ -1,208 +1,290 @@
-"""Evaluation Metrics for Semantic Segmentation"""
-import torch
-import torch.nn.functional as F
 import numpy as np
-
-__all__ = ['SegmentationMetric', 'batch_pix_accuracy', 'batch_intersection_union',
-           'pixelAccuracy', 'intersectionAndUnion', 'hist_info', 'compute_score']
-
-# cpu compute
-class SegmentationMetric(object):
+import torch.nn as nn
+import torch
+# from skimage import measure
+class ROCMetric():
     """Computes pixAcc and mIoU metric scores
     """
+    def __init__(self, nclass, bins):  #bin的意义实际上是确定ROC曲线上的threshold取多少个离散值
+        super(ROCMetric, self).__init__()
+        self.nclass = nclass
+        self.bins = bins
+        self.tp_arr = np.zeros(self.bins+1)
+        self.pos_arr = np.zeros(self.bins+1)
+        self.fp_arr = np.zeros(self.bins+1)
+        self.neg_arr = np.zeros(self.bins+1)
+        self.class_pos = np.zeros(self.bins+1)
+        # self.reset()
 
+    def update(self, preds, labels):
+
+        for iBin in range(self.bins+1):
+            score_thresh = (iBin + 0.0) / self.bins
+            # print(iBin, "-th, score_thresh: ", score_thresh)
+            i_tp, i_pos, i_fp, i_neg, i_class_pos = cal_tp_pos_fp_neg(preds, labels, self.nclass, score_thresh)
+            self.tp_arr[iBin] += i_tp
+            self.pos_arr[iBin] += i_pos
+            self.fp_arr[iBin] += i_fp
+            self.neg_arr[iBin] += i_neg
+            self.class_pos[iBin] += i_class_pos
+
+    def get(self):
+        tp_rates = self.tp_arr / (self.pos_arr + 0.001)
+        fp_rates = self.fp_arr / (self.neg_arr + 0.001)
+
+        recall = self.tp_arr / (self.pos_arr + 0.001)
+        precision = self.tp_arr / (self.class_pos + 0.001)
+
+        return tp_rates, fp_rates, recall, precision
+
+    def reset(self):
+
+        self.tp_arr = np.zeros([11])
+        self.pos_arr = np.zeros([11])
+        self.fp_arr = np.zeros([11])
+        self.neg_arr = np.zeros([11])
+        self.class_pos = np.zeros([11])
+
+
+def cal_tp_pos_fp_neg(output, target, nclass, score_thresh):
+
+    predict = (torch.sigmoid(output) > score_thresh)
+
+    # detach and tonumpy
+    predict = predict.detach().numpy()
+    target = target.detach().numpy()
+
+    if len(target.shape) == 3:
+        target = np.expand_dims(target.astype(float), axis=1)
+    elif len(target.shape) == 4:
+        target = target.astype(float)
+    else:
+        raise ValueError("Unknown target dimension")
+
+    predict = predict.astype(float)
+    intersection = predict * ((predict == target).astype(float))
+
+    tp = intersection.sum()
+    fp = (predict * ((predict != target).astype(float))).sum()
+    tn = ((1 - predict) * ((predict == target).astype(float))).sum()
+    fn = (((predict != target).astype(float)) * (1 - predict)).sum()
+    pos = tp + fn
+    neg = fp + tn
+    class_pos = tp+fp
+
+    return tp, pos, fp, neg, class_pos
+
+
+
+class mIoU:
     def __init__(self, nclass):
-        super(SegmentationMetric, self).__init__()
         self.nclass = nclass
         self.reset()
 
-    def update(self, preds, labels):
-        """Updates the internal evaluation result.
+    def update(self, pred, labels):
+        # detach and tonumpy
+        pred = pred.detach().numpy()
+        labels = labels.detach().numpy()
 
-        Parameters
-        ----------
-        labels : 'NumpyArray' or list of `NumpyArray`
-            The labels of the data.
-        preds : 'NumpyArray' or list of `NumpyArray`
-            Predicted values.
-        """
-
-        def evaluate_worker(self, pred, label):
-            pred = F.sigmoid(pred.squeeze(1)).cpu().numpy()
-            label = label.cpu().numpy()
-            correct, labeled = batch_pix_accuracy(pred, label)
-            inter, union = batch_intersection_union(pred, label)
-
-            niou = batch_nintersection_union(pred, label)
-
-            self.total_correct += correct
-            self.total_label += labeled
-            self.total_inter += inter
-            self.total_union += union
-            self.niou.append(niou)
-
-
-        if isinstance(preds, torch.Tensor):
-            evaluate_worker(self, preds, labels)
-        elif isinstance(preds, (list, tuple)):
-            for (pred, label) in zip(preds, labels):
-                evaluate_worker(self, pred, label)
+        correct, labeled = self.batch_pix_accuracy(pred, labels)
+        inter, union = self.batch_intersection_union(pred, labels)
+        self.total_correct += correct
+        self.total_label += labeled
+        self.total_inter += inter
+        self.total_union += union
 
     def get(self):
-        """Gets the current evaluation result.
-
-        Returns
-        -------
-        metrics : tuple of float
-            pixAcc and mIoU
-        """
-        pixAcc = 1.0 * self.total_correct / (2.220446049250313e-16 + self.total_label)  # remove np.spacing(1)
+        pixAcc = 1.0 * self.total_correct / (2.220446049250313e-16 + self.total_label)
         IoU = 1.0 * self.total_inter / (2.220446049250313e-16 + self.total_union)
-        mIoU = IoU.mean().item()
-
-        nioulist = [i for item in self.niou for i in item]
-        nIoU = (sum(nioulist) / len(nioulist)).item()
-
-        return pixAcc, mIoU, nIoU
+        mIoU = IoU.mean()
+        return pixAcc, mIoU
 
     def reset(self):
-        """Resets the internal evaluation result to initial state."""
-        self.total_inter = torch.zeros(self.nclass)
-        self.total_union = torch.zeros(self.nclass)
+
+        self.total_inter = 0
+        self.total_union = 0
         self.total_correct = 0
         self.total_label = 0
-        self.niou = []
 
 
-# pytorch version
-def batch_pix_accuracy(output, target, score_thresh=0.5):
-    """PixAcc"""    #
+    def batch_pix_accuracy(self, output, target):
 
-    assert output.shape == target.shape
-    pred = (output > score_thresh).astype(np.int64)
-    target = target.astype(np.int64)
+        # shape check
+        if len(target.shape) == 3:
+            target = np.expand_dims(target.astype(float), axis=1)
+        elif len(target.shape) == 4:
+            target = target.astype(float)
+        else:
+            raise ValueError("Unknown target dimension")
 
+        assert output.shape == target.shape, "Predict and Label Shape Don't Match"
 
-    pixel_labeled = np.sum(target > 0)   # T
-    pixel_correct = np.sum((pred == target) * (target > 0))  # TP
+        predict = (output > 0).astype(float)  # P  x>0,sigmoid>0.5->true
+        pixel_labeled = (target > 0).astype(float).sum()   # T
+        pixel_correct = (((predict == target).astype(float)) * ((target > 0).astype(float))).sum()  # TP
 
+        assert pixel_correct <= pixel_labeled, "Correct area should be smaller than Labeled"
+        return pixel_correct, pixel_labeled
 
-    assert pixel_correct <= pixel_labeled, "Correct area should be smaller than Labeled"
-    return pixel_correct, pixel_labeled
+    def batch_intersection_union(self, output, target):
 
+        mini = 1
+        maxi = 1
+        nbins = 1
 
-def batch_intersection_union(output, target, score_thresh=0.5):
-    """mIoU"""
-    # inputs are numpy array, output 4D, target 3D
+        if len(target.shape) == 3:
+            target = np.expand_dims(target.astype(float), axis=1)
+        elif len(target.shape) == 4:
+            target = target.astype(float)
+        else:
+            raise ValueError("Unknown target dimension")
 
-    mini = 1
-    maxi = 1  # nclass
-    nbins = 1  # nclass
+        predict = (output > 0).astype(float)  # P
+        intersection = predict * ((predict == target).astype(float))
 
-    assert output.shape == target.shape
-    pred = (output > score_thresh).astype(np.int64)
-    target = target.astype(np.int64)
-
-
-    intersection = pred * (pred == target)  # TP
-    # areas of intersection and union
-    area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))
-    area_pred, _ = np.histogram(pred, bins=nbins, range=(mini, maxi))
-    area_lab, _ = np.histogram(target, bins=nbins, range=(mini, maxi))
-    area_union = area_pred + area_lab - area_inter
-    assert (area_inter <= area_union).all(), \
-        "Intersection area should be smaller than Union area"
-    return area_inter, area_union
-
-def batch_nintersection_union(output, target, score_thresh=0.5):
-    """
-    nIoU
-    :param output:
-    :param target:
-    :param score_thresh:
-    :return:
-    """
-    mini = 1
-    maxi = 1  # nclass
-    nbins = 1  # nclass
-    niou = []
-
-    assert output.shape == target.shape
-    pred = (output > score_thresh).astype(np.int64)
-    target = target.astype(np.int64)
-
-
-    for i in range(output.shape[0]):   # batch_size
-        intersection = pred[i] * (pred[i] == target[i])  # TP  # 2D
         area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))
-        area_pred, _ = np.histogram(pred[i], bins=nbins, range=(mini, maxi))
-        area_lab, _ = np.histogram(target[i], bins=nbins, range=(mini, maxi))
+        area_pred, _ = np.histogram(predict, bins=nbins, range=(mini, maxi))
+        area_lab, _ = np.histogram(target, bins=nbins, range=(mini, maxi))
         area_union = area_pred + area_lab - area_inter
+
         assert (area_inter <= area_union).all(), \
-            "Intersection area should be smaller than Union area"
-        iou = area_inter / (area_union + 1e-10)
-        niou.append(iou)
-
-    return niou
-
-def pixelAccuracy(imPred, imLab):
-    """
-    This function takes the prediction and label of a single image, returns pixel-wise accuracy
-    To compute over many images do:
-    for i = range(Nimages):
-         (pixel_accuracy[i], pixel_correct[i], pixel_labeled[i]) = \
-            pixelAccuracy(imPred[i], imLab[i])
-    mean_pixel_accuracy = 1.0 * np.sum(pixel_correct) / (np.spacing(1) + np.sum(pixel_labeled))
-    """
-    # Remove classes from unlabeled pixels in gt image.
-    # We should not penalize detections in unlabeled portions of the image.
-    pixel_labeled = np.sum(imLab >= 0)
-    pixel_correct = np.sum((imPred == imLab) * (imLab >= 0))
-    pixel_accuracy = 1.0 * pixel_correct / pixel_labeled
-    return (pixel_accuracy, pixel_correct, pixel_labeled)
-
-
-def intersectionAndUnion(imPred, imLab, numClass):
-    """
-    This function takes the prediction and label of a single image,
-    returns intersection and union areas for each class
-    To compute over many images do:
-    for i in range(Nimages):
-        (area_intersection[:,i], area_union[:,i]) = intersectionAndUnion(imPred[i], imLab[i])
-    IoU = 1.0 * np.sum(area_intersection, axis=1) / np.sum(np.spacing(1)+area_union, axis=1)
-    """
-    # Remove classes from unlabeled pixels in gt image.
-    # We should not penalize detections in unlabeled portions of the image.
-    imPred = imPred * (imLab >= 0)
-
-    # Compute area intersection:
-    intersection = imPred * (imPred == imLab)
-    (area_intersection, _) = np.histogram(intersection, bins=numClass, range=(1, numClass))
-
-    # Compute area union:
-    (area_pred, _) = np.histogram(imPred, bins=numClass, range=(1, numClass))
-    (area_lab, _) = np.histogram(imLab, bins=numClass, range=(1, numClass))
-    area_union = area_pred + area_lab - area_intersection
-    return (area_intersection, area_union)
+            "Error: Intersection area should be smaller than Union area"
+        return area_inter, area_union
 
 
 
-def hist_info(pred, label, num_cls):
-    assert pred.shape == label.shape
-    k = (label >= 0) & (label < num_cls)
-    labeled = np.sum(k)
-    correct = np.sum((pred[k] == label[k]))
 
-    return np.bincount(num_cls * label[k].astype(int) + pred[k], minlength=num_cls ** 2).reshape(num_cls,
-                                                                                                 num_cls), labeled, correct
+class nIoU:
+    def __init__(self, nclass, score_thresh=0.5):
+        self.nclass = nclass
+        self.score_thresh = score_thresh
+        self.reset()
+
+    def update(self, pred, labels):
+        # detach and tonumpy
+        pred = pred.detach().numpy()
+        labels = labels.detach().numpy()
+
+        inter_arr, union_arr = self.batch_intersection_union(pred, labels)
+        self.total_inter = np.append(self.total_inter, inter_arr)
+        self.total_union = np.append(self.total_union, union_arr)
+
+    def get(self):
+        IoU = 1.0 * self.total_inter / (np.spacing(1) + self.total_union)
+        mIoU = IoU.mean()
+        return IoU, mIoU
+
+    def reset(self):
+        self.total_inter = np.array([])
+        self.total_union = np.array([])
+        self.total_correct = np.array([])
+        self.total_label = np.array([])
 
 
-def compute_score(hist, correct, labeled):
-    iu = np.diag(hist) / (hist.sum(1) + hist.sum(0) - np.diag(hist))
-    mean_IU = np.nanmean(iu)
-    mean_IU_no_back = np.nanmean(iu[1:])
-    freq = hist.sum(1) / hist.sum()
-    freq_IU = (iu[freq > 0] * freq[freq > 0]).sum()
-    mean_pixel_acc = correct / labeled
+    def batch_intersection_union(self, output, target):
+        mini = 1
+        maxi = 1  # nclass
+        nbins = 1  # nclass
 
-    return iu, mean_IU, mean_IU_no_back, mean_pixel_acc
+        if len(target.shape) == 3:
+            target = np.expand_dims(target.astype(float), axis=1)
+        elif len(target.shape) == 4:
+            target = target.astype(float)
+        else:
+            raise ValueError("Unknown target dimension")
+
+        predict = (output > 0).astype(float)  # P
+        intersection = predict * ((predict == target).astype(float))
+
+        num_sample = intersection.shape[0]
+        area_inter_arr = np.zeros(num_sample)
+        area_pred_arr = np.zeros(num_sample)
+        area_lab_arr = np.zeros(num_sample)
+        area_union_arr = np.zeros(num_sample)
+
+        for b in range(num_sample):
+            # areas of intersection and union
+            area_inter, _ = np.histogram(intersection[b], bins=nbins, range=(mini, maxi))
+            area_inter_arr[b] = area_inter
+
+            area_pred, _ = np.histogram(predict[b], bins=nbins, range=(mini, maxi))
+            area_pred_arr[b] = area_pred
+
+            area_lab, _ = np.histogram(target[b], bins=nbins, range=(mini, maxi))
+            area_lab_arr[b] = area_lab
+
+            area_union = area_pred + area_lab - area_inter
+            area_union_arr[b] = area_union
+
+            assert (area_inter <= area_union).all()
+
+        return area_inter_arr, area_union_arr
+
+
+
+
+
+
+
+# class PD_FA():
+#     def __init__(self, nclass, bins):
+#         super(PD_FA, self).__init__()
+#         self.nclass = nclass
+#         self.bins = bins
+#         self.image_area_total = []
+#         self.image_area_match = []
+#         self.FA = np.zeros(self.bins+1)
+#         self.PD = np.zeros(self.bins + 1)
+#         self.target= np.zeros(self.bins + 1)
+#     def update(self, preds, labels):
+#
+#         for iBin in range(self.bins+1):
+#             score_thresh = iBin * (255/self.bins)
+#             predits = np.array((preds > score_thresh).cpu()).astype('int64')
+#             predits = np.reshape (predits, (256, 256))
+#             labelss = np.array((labels).cpu()).astype('int64') # P
+#             labelss = np.reshape(labelss, (256, 256))
+#
+#             image = measure.label(predits, connectivity=2)
+#             coord_image = measure.regionprops(image)
+#             label = measure.label(labelss , connectivity=2)
+#             coord_label = measure.regionprops(label)
+#
+#             self.target[iBin] += len(coord_label)
+#             self.image_area_total = []
+#             self.image_area_match = []
+#             self.distance_match = []
+#             self.dismatch = []
+#
+#             for K in range(len(coord_image)):
+#                 area_image = np.array(coord_image[K].area)
+#                 self.image_area_total.append(area_image)
+#
+#             for i in range(len(coord_label)):
+#                 centroid_label = np.array(list(coord_label[i].centroid))
+#                 for m in range(len(coord_image)):
+#                     centroid_image = np.array(list(coord_image[m].centroid))
+#                     distance = np.linalg.norm(centroid_image - centroid_label)
+#                     area_image = np.array(coord_image[m].area)
+#                     if distance < 3:
+#                         self.distance_match.append(distance)
+#                         self.image_area_match.append(area_image)
+#
+#                         del coord_image[m]
+#                         break
+#
+#             self.dismatch = [x for x in self.image_area_total if x not in self.image_area_match]
+#             self.FA[iBin] += np.sum(self.dismatch)
+#             self.PD[iBin]+=len(self.distance_match)
+#
+#     def get(self, img_num):
+#
+#         Final_FA = self.FA / ((256 * 256) * img_num)
+#         Final_PD = self.PD /self.target
+#
+#         return Final_FA, Final_PD
+#
+#
+#     def reset(self):
+#         self.FA = np.zeros([self.bins+1])
+#         self.PD = np.zeros([self.bins+1])
