@@ -746,3 +746,368 @@ class PCMLayer(nn.Module):
 
 
 
+
+####### DNAnet code #######
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+    def SoftIoULoss(pred, target):
+        # Old One
+        pred = torch.sigmoid(pred)
+        smooth = 1
+
+        # print("pred.shape: ", pred.shape)
+        # print("target.shape: ", target.shape)
+
+        intersection = pred * target
+        loss = (intersection.sum() + smooth) / (pred.sum() + target.sum() - intersection.sum() + smooth)
+
+        # loss = (intersection.sum(axis=(1, 2, 3)) + smooth) / \
+        #        (pred.sum(axis=(1, 2, 3)) + target.sum(axis=(1, 2, 3))
+        #         - intersection.sum(axis=(1, 2, 3)) + smooth)
+
+        loss = 1 - loss.mean()
+        # loss = (1 - loss).mean()
+
+        return loss
+
+
+
+import torch.nn.functional as F
+from torchvision.models.segmentation.fcn import FCNHead
+from module import *
+from combine import PCMLayer
+
+
+#  modified ALC
+
+class ALCNet(nn.Module):
+    """
+
+    """
+
+    def __init__(self, backbone, same_layer=PCMLayer, cross_layer=BLAM, fuse_direction='Dec', classes=1):
+        super(ALCNet, self).__init__()
+
+        self.backbone = backbone
+        self.same_layer = same_layer(mpcm=True)
+        self.cross_layer = cross_layer(channels=16)
+
+        layers = backbone.layers
+        layers_num = list(range(1, len(layers) + 1))  # default [1,2,3]
+        channels = backbone.channels  # defalut [8, 16, 32, 64]
+
+        ## fuse_direction: increase('Inc'), decrease('Dec')
+        ## fuse_process: 1*1 conv+bn+relu to equalize channels num
+        if fuse_direction == 'Dec':
+            self.conv1 = nn.Conv2d(channels[layers_num[1]], channels[layers_num[0]], kernel_size=1, stride=1,
+                                   padding=0, bias=False)
+            self.bn1 = nn.BatchNorm2d(channels[layers_num[0]])
+
+            self.conv2 = nn.Conv2d(channels[layers_num[2]], channels[layers_num[0]], kernel_size=1, stride=1,
+                                   padding=0, bias=False)
+            self.bn2 = nn.BatchNorm2d(channels[layers_num[0]])
+
+            self.relu = nn.ReLU(inplace=True)
+            # change channels
+            self.dec_1 = nn.Sequential(
+                nn.Conv2d(channels[layers_num[1]], channels[layers_num[0]], kernel_size=1, stride=1, padding=0,
+                          bias=False),
+                nn.BatchNorm2d(channels[layers_num[0]]),
+                nn.ReLU(inplace=True)
+            )  # 32->16
+            self.dec_2 = nn.Sequential(
+                nn.Conv2d(channels[layers_num[2]], channels[layers_num[0]], kernel_size=1, stride=1, padding=0,
+                          bias=False),
+                nn.BatchNorm2d(channels[layers_num[0]]),
+                nn.ReLU(inplace=True)
+            )  # 64->16
+
+        elif fuse_direction == 'Inc':
+            self.conv1 = nn.Conv2d(channels[layers_num[-2]], channels[layers_num[-1]], kernel_size=1, stride=1,
+                                   padding=0, bias=False)
+            self.bn1 = nn.BatchNorm2d(channels[layers_num[-1]])
+
+            self.conv2 = nn.Conv2d(channels[layers_num[-3]], channels[layers_num[-1]], kernel_size=1, stride=1,
+                                   padding=0, bias=False)
+            self.bn2 = nn.BatchNorm2d(channels[layers_num[-1]])
+
+            self.relu = nn.ReLU(inplace=True)
+
+            self.inc_1 = nn.Sequential(
+                nn.Conv2d(channels[layers_num[-2]], channels[layers_num[-1]], kernel_size=1, stride=1, padding=0,
+                          bias=False),
+                nn.BatchNorm2d(channels[layers_num[-1]]),
+                nn.ReLU(inplace=True)
+            )  # 32->64
+            self.inc_2 = nn.Sequential(
+                nn.Conv2d(channels[layers_num[-3]], channels[layers_num[-1]], kernel_size=1, stride=1, padding=0,
+                          bias=False),
+                nn.BatchNorm2d(channels[layers_num[-1]]),
+                nn.ReLU(inplace=True)
+            )  # 16->64
+
+        else:
+            raise ValueError('Wrong direction!')
+
+        self.head = FCNHead(channels[layers_num[0]], channels=classes)
+
+    def forward(self, x):
+
+        _, _, orig_h, orig_w = x.shape
+
+        c1, c2, c3 = self.backbone(x)
+        _, _, c1_h, c1_w = c1.shape  # 480*480*16
+        _, _, c2_h, c2_w = c2.shape  # 240*240*32
+        _, _, c3_h, c3_w = c3.shape  # 120*120*64
+
+        c3pcm = self.same_layer(c3)
+        c3pcm = self.dec_2(c3pcm)  # ->16
+        up_c3pcm = F.interpolate(c3pcm, size=(c2_h, c2_w), mode='bilinear')
+
+        c2pcm = self.same_layer(c2)
+        c2pcm = self.dec_1(c2pcm)  # ->16
+
+        c23pcm = self.cross_layer(up_c3pcm, c2pcm)
+        up_c23pcm = F.interpolate(c23pcm, size=(c1_h, c1_w), mode='bilinear')
+
+        c1pcm = self.same_layer(c1)
+        out = self.cross_layer(up_c23pcm, c1pcm)  # ->16
+
+        pred = self.head(out)
+        out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear')
+
+        return out
+
+
+
+
+
+
+
+
+
+### old metric
+
+__all__ = ['SegmentationMetric', 'batch_pix_accuracy', 'batch_intersection_union',
+           'pixelAccuracy', 'intersectionAndUnion', 'hist_info', 'compute_score']
+
+# cpu compute
+class SegmentationMetric(object):
+    """Computes pixAcc and mIoU metric scores
+    """
+
+    def __init__(self, nclass):
+        super(SegmentationMetric, self).__init__()
+        self.nclass = nclass
+        self.reset()
+
+    def update(self, preds, labels):
+        """Updates the internal evaluation result.
+
+        Parameters
+        ----------
+        labels : 'NumpyArray' or list of `NumpyArray`
+            The labels of the data.
+        preds : 'NumpyArray' or list of `NumpyArray`
+            Predicted values.
+        """
+
+        def evaluate_worker(self, pred, label):
+            pred = F.sigmoid(pred.squeeze(1)).cpu().numpy()
+            label = label.cpu().numpy()
+            correct, labeled = batch_pix_accuracy(pred, label)
+            inter, union = batch_intersection_union(pred, label)
+
+            niou = batch_nintersection_union(pred, label)
+
+            self.total_correct += correct
+            self.total_label += labeled
+            self.total_inter += inter
+            self.total_union += union
+            self.niou.append(niou)
+
+
+        if isinstance(preds, torch.Tensor):
+            evaluate_worker(self, preds, labels)
+        elif isinstance(preds, (list, tuple)):
+            for (pred, label) in zip(preds, labels):
+                evaluate_worker(self, pred, label)
+
+    def get(self):
+        """Gets the current evaluation result.
+
+        Returns
+        -------
+        metrics : tuple of float
+            pixAcc and mIoU
+        """
+        pixAcc = 1.0 * self.total_correct / (2.220446049250313e-16 + self.total_label)  # remove np.spacing(1)
+        IoU = 1.0 * self.total_inter / (2.220446049250313e-16 + self.total_union)
+        mIoU = IoU.mean().item()
+
+        nioulist = [i for item in self.niou for i in item]
+        nIoU = (sum(nioulist) / len(nioulist)).item()
+
+        return pixAcc, mIoU, nIoU
+
+    def reset(self):
+        """Resets the internal evaluation result to initial state."""
+        self.total_inter = torch.zeros(self.nclass)
+        self.total_union = torch.zeros(self.nclass)
+        self.total_correct = 0
+        self.total_label = 0
+        self.niou = []
+
+
+# pytorch version
+def batch_pix_accuracy(output, target, score_thresh=0.5):
+    """PixAcc"""    #
+
+    assert output.shape == target.shape
+    pred = (output > score_thresh).astype(np.int64)
+    target = target.astype(np.int64)
+
+
+    pixel_labeled = np.sum(target > 0)   # T
+    pixel_correct = np.sum((pred == target) * (target > 0))  # TP
+
+
+    assert pixel_correct <= pixel_labeled, "Correct area should be smaller than Labeled"
+    return pixel_correct, pixel_labeled
+
+
+def batch_intersection_union(output, target, score_thresh=0.5):
+    """mIoU"""
+    # inputs are numpy array, output 4D, target 3D
+
+    mini = 1
+    maxi = 1  # nclass
+    nbins = 1  # nclass
+
+    assert output.shape == target.shape
+    pred = (output > score_thresh).astype(np.int64)
+    target = target.astype(np.int64)
+
+
+    intersection = pred * (pred == target)  # TP
+    # areas of intersection and union
+    area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))
+    area_pred, _ = np.histogram(pred, bins=nbins, range=(mini, maxi))
+    area_lab, _ = np.histogram(target, bins=nbins, range=(mini, maxi))
+    area_union = area_pred + area_lab - area_inter
+    assert (area_inter <= area_union).all(), \
+        "Intersection area should be smaller than Union area"
+    return area_inter, area_union
+
+def batch_nintersection_union(output, target, score_thresh=0.5):
+    """
+    nIoU
+    :param output:
+    :param target:
+    :param score_thresh:
+    :return:
+    """
+    mini = 1
+    maxi = 1  # nclass
+    nbins = 1  # nclass
+    niou = []
+
+    assert output.shape == target.shape
+    pred = (output > score_thresh).astype(np.int64)
+    target = target.astype(np.int64)
+
+
+    for i in range(output.shape[0]):   # batch_size
+        intersection = pred[i] * (pred[i] == target[i])  # TP  # 2D
+        area_inter, _ = np.histogram(intersection, bins=nbins, range=(mini, maxi))
+        area_pred, _ = np.histogram(pred[i], bins=nbins, range=(mini, maxi))
+        area_lab, _ = np.histogram(target[i], bins=nbins, range=(mini, maxi))
+        area_union = area_pred + area_lab - area_inter
+        assert (area_inter <= area_union).all(), \
+            "Intersection area should be smaller than Union area"
+        iou = area_inter / (area_union + 1e-10)
+        niou.append(iou)
+
+    return niou
+
+def pixelAccuracy(imPred, imLab):
+    """
+    This function takes the prediction and label of a single image, returns pixel-wise accuracy
+    To compute over many images do:
+    for i = range(Nimages):
+         (pixel_accuracy[i], pixel_correct[i], pixel_labeled[i]) = \
+            pixelAccuracy(imPred[i], imLab[i])
+    mean_pixel_accuracy = 1.0 * np.sum(pixel_correct) / (np.spacing(1) + np.sum(pixel_labeled))
+    """
+    # Remove classes from unlabeled pixels in gt image.
+    # We should not penalize detections in unlabeled portions of the image.
+    pixel_labeled = np.sum(imLab >= 0)
+    pixel_correct = np.sum((imPred == imLab) * (imLab >= 0))
+    pixel_accuracy = 1.0 * pixel_correct / pixel_labeled
+    return (pixel_accuracy, pixel_correct, pixel_labeled)
+
+
+def intersectionAndUnion(imPred, imLab, numClass):
+    """
+    This function takes the prediction and label of a single image,
+    returns intersection and union areas for each class
+    To compute over many images do:
+    for i in range(Nimages):
+        (area_intersection[:,i], area_union[:,i]) = intersectionAndUnion(imPred[i], imLab[i])
+    IoU = 1.0 * np.sum(area_intersection, axis=1) / np.sum(np.spacing(1)+area_union, axis=1)
+    """
+    # Remove classes from unlabeled pixels in gt image.
+    # We should not penalize detections in unlabeled portions of the image.
+    imPred = imPred * (imLab >= 0)
+
+    # Compute area intersection:
+    intersection = imPred * (imPred == imLab)
+    (area_intersection, _) = np.histogram(intersection, bins=numClass, range=(1, numClass))
+
+    # Compute area union:
+    (area_pred, _) = np.histogram(imPred, bins=numClass, range=(1, numClass))
+    (area_lab, _) = np.histogram(imLab, bins=numClass, range=(1, numClass))
+    area_union = area_pred + area_lab - area_intersection
+    return (area_intersection, area_union)
+
+
+
+def hist_info(pred, label, num_cls):
+    assert pred.shape == label.shape
+    k = (label >= 0) & (label < num_cls)
+    labeled = np.sum(k)
+    correct = np.sum((pred[k] == label[k]))
+
+    return np.bincount(num_cls * label[k].astype(int) + pred[k], minlength=num_cls ** 2).reshape(num_cls,
+                                                                                                 num_cls), labeled, correct
+
+
+def compute_score(hist, correct, labeled):
+    iu = np.diag(hist) / (hist.sum(1) + hist.sum(0) - np.diag(hist))
+    mean_IU = np.nanmean(iu)
+    mean_IU_no_back = np.nanmean(iu[1:])
+    freq = hist.sum(1) / hist.sum()
+    freq_IU = (iu[freq > 0] * freq[freq > 0]).sum()
+    mean_pixel_acc = correct / labeled
+
+    return iu, mean_IU, mean_IU_no_back, mean_pixel_acc
+
+
+
+
