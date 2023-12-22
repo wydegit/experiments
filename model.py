@@ -3,80 +3,114 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.segmentation.fcn import FCNHead
-from module import BLAM, BGAM, add, concat
+from module import *
 from combine import PCMLayer
 
 
 
-class ALCNet(nn.Module):
+class ALCNet_straight(nn.Module):
     """
-    Resnet backbone + MPCM + BLAM + FCNHead
+     Resnet backbone + MPCM + BLAM + FCNHead
     """
-    def __init__(self, backbone, same_layer=PCMLayer, cross_layer=BLAM, fuse_direction='Dec', classes=1):
-        super(ALCNet, self).__init__()
+    def __init__(self, backbone, same_layer=PCMLayer, cross_layer=BLAM, classes=1):
+        super(ALCNet_straight, self).__init__()
 
-        self.backbone = backbone
+        self.backbone = backbone  # tiny
         self.same_layer = same_layer(mpcm=True)
-        self.cross_layer = cross_layer(channels=16)
 
-        layers = backbone.layers
-        layers_num = list(range(1, len(layers) + 1))  # default [1,2,3]
-        channels = backbone.channels  # defalut [8, 16, 32, 64]
+        channels = backbone.channels
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(channels[3], channels[1], kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[1]),
+            nn.ReLU(inplace=True)
+        )  # 64 -> 16
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(channels[2], channels[1], kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[1]),
+            nn.ReLU(inplace=True)
+        )  # 32 -> 16
 
-        ## fuse_direction: increase('Inc'), decrease('Dec')
-        ## fuse_process: 1*1 conv+bn+relu to equalize channels num
-        if fuse_direction == 'Dec':
-            self.conv1 = nn.Conv2d(channels[layers_num[1]], channels[layers_num[0]], kernel_size=1, stride=1,
-                                   padding=0, bias=False) # 32->16
-            self.bn1 = nn.BatchNorm2d(channels[layers_num[0]])
+        self.cross_layer = cross_layer(channels=channels[1], r=4)
 
-            self.conv2 = nn.Conv2d(channels[layers_num[2]], channels[layers_num[0]], kernel_size=1, stride=1,
-                                   padding=0, bias=False) # 64->16
-            self.bn2 = nn.BatchNorm2d(channels[layers_num[0]])
-
-            self.relu = nn.ReLU(inplace=True)
-
-        elif fuse_direction == 'Inc':
-            self.conv1 = nn.Conv2d(channels[layers_num[-2]], channels[layers_num[-1]], kernel_size=1, stride=1,
-                                   padding=0, bias=False)
-            self.bn1 = nn.BatchNorm2d(channels[layers_num[-1]])
-
-            self.conv2 = nn.Conv2d(channels[layers_num[-3]], channels[layers_num[-1]], kernel_size=1, stride=1,
-                                   padding=0, bias=False)
-            self.bn2 = nn.BatchNorm2d(channels[layers_num[-1]])
-
-            self.relu = nn.ReLU(inplace=True)
-        else:
-            raise ValueError('Wrong direction!')
-
-        self.head = FCNHead(channels[1], channels=classes)
+        self.head = FCNHead(in_channels=channels[1], channels=classes)
 
     def forward(self, x):
-
-        _, _, orig_h, orig_w = x.shape
+        _, _, orig_h, orig_w = x.shape  # 480
 
         c1, c2, c3 = self.backbone(x)
-        _, _, c1_h, c1_w = c1.shape  # 480*480*16
-        _, _, c2_h, c2_w = c2.shape  # 240*240*32
-        _, _, c3_h, c3_w = c3.shape  # 120*120*64
+        _, _, c1_h, c1_w = c1.shape  # 16 *480/120
+        _, _, c2_h, c2_w = c2.shape  # 32 *240/60
+        _, _, c3_h, c3_w = c3.shape  # 64 *120/30
 
         c3pcm = self.same_layer(c3)
-        c3pcm = self.relu(self.bn2(self.conv2(c3pcm)))  # ->16
+        c3pcm = self.dec3(c3pcm)  # 64->16
         up_c3pcm = F.interpolate(c3pcm, size=(c2_h, c2_w), mode='bilinear')
 
         c2pcm = self.same_layer(c2)
-        c2pcm = self.relu(self.bn1(self.conv1(c2pcm)))  # ->16
+        c2pcm = self.dec2(c2pcm)  # 32->16
 
-        c23pcm = self.cross_layer(up_c3pcm, c2pcm)
+        c23pcm = self.cross_layer(c2pcm, up_c3pcm)
         up_c23pcm = F.interpolate(c23pcm, size=(c1_h, c1_w), mode='bilinear')
 
         c1pcm = self.same_layer(c1)
-        out = self.cross_layer(up_c23pcm, c1pcm)   # ->16
+        c123pcm = self.cross_layer(c1pcm, up_c23pcm)
 
-        pred = self.head(out)
+        pred = self.head(c123pcm)
         out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear')
 
         return out
+
+
+class ALCNet_cross(nn.Module):
+    def __init__(self, backbone, same_layer=PCMLayer, cross_layer=BLAM, classes=1):
+        super(ALCNet_cross, self).__init__()
+
+        self.backbone = backbone  # tiny
+        self.same_layer = same_layer(mpcm=True)
+
+        channels = backbone.channels
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(channels[3], channels[2], kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[2]),
+            nn.ReLU(inplace=True)
+        )  # 64 -> 32
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(channels[2], channels[1], kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[1]),
+            nn.ReLU(inplace=True)
+        )  # 32 -> 16
+
+        self.cross_layer1 = cross_layer(channels=channels[1], r=4)  # 16
+        self.cross_layer2 = cross_layer(channels=channels[2], r=4)  # 32
+
+        self.head = FCNHead(in_channels=channels[1], channels=classes)
+
+
+    def forward(self, x):
+        _, _, orig_h, orig_w = x.shape  # 480
+
+        c1, c2, c3 = self.backbone(x)
+        _, _, c1_h, c1_w = c1.shape  # 16 *480/120
+        _, _, c2_h, c2_w = c2.shape  # 32 *240/60
+        _, _, c3_h, c3_w = c3.shape  # 64 *120/30
+
+        c3pcm = self.same_layer(c3)
+        c2pcm = self.same_layer(c2)
+        c1pcm = self.same_layer(c1)
+
+        c3pcm = self.dec3(c3pcm)  # 64->32
+        up_c3pcm = F.interpolate(c3pcm, size=(c2_h, c2_w), mode='bilinear')
+        c23pcm = self.cross_layer2(c2pcm, up_c3pcm)  # 32
+
+        c23pcm = self.dec2(c23pcm)  # 32->16
+        up_c23pcm = F.interpolate(c23pcm, size=(c1_h, c1_w), mode='bilinear')
+        c123pcm = self.cross_layer1(c1pcm, up_c23pcm)  # 16
+
+        pred = self.head(c123pcm)
+        out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear')
+
+        return out
+
 
 
 
@@ -252,3 +286,110 @@ class UNet(nn.Module):
         out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear')
 
         return out
+
+
+
+class ACMFPN_straight(nn.Module):
+    """
+    resnet20 + 0 + ACM + FCNHead (based on FPN)
+    """
+    def __init__(self, backbone, same_layer=None, cross_layer=ACM, classes=1):
+        super(ACMFPN_straight, self).__init__()
+        self.backbone = backbone
+        self.same_layer = same_layer
+
+        self.cross_layer = cross_layer(channels=16)
+
+        channels = backbone.channels
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(channels[3], channels[1], kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[1]),
+            nn.ReLU(inplace=True)
+        )  # 64->16
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(channels[2], channels[1], kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[1]),
+            nn.ReLU(inplace=True)
+        )  # 32->16
+
+        self.head = FCNHead(channels[1], channels=classes)
+
+    def forward(self, x):
+        _, _, orig_h, orig_w = x.shape  # 480
+
+        c1, c2, c3 = self.backbone(x)
+        _, _, c1_h, c1_w = c1.shape  # 16 *480/120
+        _, _, c2_h, c2_w = c2.shape  # 32 *240/60
+        _, _, c3_h, c3_w = c3.shape  # 64 *120/30
+
+        c3 = self.dec3(c3)  # ->16
+        c3_up = F.interpolate(c3, size=(c2_h, c2_w), mode='bilinear')
+
+        c2 = self.dec2(c2)  # ->16
+        c23 = self.cross_layer(c2, c3_up)
+        c23_up = F.interpolate(c23, size=(c1_h, c1_w), mode='bilinear')
+
+        c123 = self.cross_layer(c1, c23_up)
+
+        pred = self.head(c123)
+        out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear')
+
+        return out
+
+
+
+class ACMFPN_cross(nn.Module):
+    """
+    resnet20 + 0 + ACM + FCNHead (based on FPN)
+    """
+    def __init__(self, backbone, same_layer=None, cross_layer=ACM, classes=1):
+        super(ACMFPN_cross, self).__init__()
+        self.backbone = backbone
+        self.same_layer = same_layer
+
+        self.cross_layer1 = cross_layer(channels=16)
+        self.cross_layer2 = cross_layer(channels=32)
+
+        channels = backbone.channels
+        self.dec_1 = nn.Sequential(
+            nn.Conv2d(channels[2], channels[1], kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[1]),
+            nn.ReLU(inplace=True)
+        )  # 32->16
+        self.dec_2 = nn.Sequential(
+            nn.Conv2d(channels[3], channels[2], kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(channels[2]),
+            nn.ReLU(inplace=True)
+        )  # 64->32
+
+        self.head = FCNHead(channels[1], channels=classes)
+
+    def forward(self, x):
+        _, _, orig_h, orig_w = x.shape  # 480
+
+        c1, c2, c3 = self.backbone(x)
+        _, _, c1_h, c1_w = c1.shape  # 16 *480/120
+        _, _, c2_h, c2_w = c2.shape  # 32 *240/60
+        _, _, c3_h, c3_w = c3.shape  # 64 *120/30
+
+
+        c3_up = F.interpolate(c3, size=(c2_h, c2_w), mode='bilinear')
+        c3_up = self.dec_2(c3_up)  # ->32
+        c23 = self.cross_layer2(c2, c3_up)
+
+        c23_up = F.interpolate(c23, size=(c1_h, c1_w), mode='bilinear')
+        c23_up = self.dec_1(c23_up)  # ->16
+        out = self.cross_layer1(c1, c23_up)
+
+        pred = self.head(out)
+        out = F.interpolate(pred, size=(orig_h, orig_w), mode='bilinear')
+
+        return out
+
+
+
+
+
+
+
+
