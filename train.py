@@ -267,7 +267,7 @@ class Trainer(object):
 
         self.net.train()
         for i, (images, labels) in enumerate(tbar):
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
 
             images = images.to(args.ctx[0])
             labels = labels.to(args.ctx[0])
@@ -279,12 +279,12 @@ class Trainer(object):
             self.optimizer.step()
 
             train_loss += loss.item()    # loss.item():mean loss of this batch
-            self.lr_scheduler.step()
+            # self.lr_scheduler.step()
 
-            tbar.set_description('Epoch: %d || Iters: %d || Training loss: %.4f'
-                                 % (epoch, (epoch * len(self.train_data)) + i, train_loss / (i + 1)))
 
-        train_logger.info("Epoch:{:d} ; Training loss:{:.4f}".format(epoch, train_loss / len(self.train_data)))
+            tbar.set_description(f'Epoch:{epoch} || Iters:{(epoch * len(self.train_data)) + i} || Training loss:{(train_loss / (i + 1)):.4f}')
+
+        train_logger.info(f'Epoch{epoch}  Training loss:{(train_loss / len(self.train_data)):.4f}')
 
 
     def validation(self, epoch):
@@ -321,8 +321,11 @@ class Trainer(object):
                                 % (epoch, (epoch * len(self.eval_data)) + i,
                                    val_loss / (i + 1), mIoU, nIoU))
 
-        val_logger.info(f'Epoch{epoch} ; val_loss{(val_loss / len(self.eval_data)):.4f} ; mIoU{mIoU:.4f} ; nIoU{nIoU:.4f}'
-                        f'; precision:{precision} ; recall:{recall}')
+            tbar.set_description(f'Epoch{epoch} || Iters{(epoch * len(self.eval_data)) + i} || val_loss:{val_loss / (i + 1)} \
+                                || mIoU:{mIoU:.4f} || nIoU:{nIoU:.4f}')
+
+        val_logger.info(f'Epoch{epoch}  val_loss:{(val_loss / len(self.eval_data)):.4f}  mIoU:{mIoU:.4f}  nIoU:{nIoU:.4f}  \
+                        precision:{np.around(precision, 4)}  recall:{np.around(recall, 4)}')
 
         ## for all epochs
         if mIoU > self.best_iou:
