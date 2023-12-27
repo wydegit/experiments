@@ -32,7 +32,7 @@ def parse_args():
 
     ######## model ########
     parser.add_argument('--net-choice', type=str, default='ALCNet-straight', help='model')
-    parser.add_argument('--summary', action='store_true', default=True, help='print model summary')
+    parser.add_argument('--summary', action='store_true', default=False, help='print model summary')
 
     parser.add_argument('--blocks', type=int, default=4, help='[1] * ResnetBasicBlocks')
     parser.add_argument('--channels', type=int, default=8, help='stem channels')
@@ -282,7 +282,7 @@ class Trainer(object):
             self.lr_scheduler.step()
 
             tbar.set_description('Epoch: %d || Iters: %d || Training loss: %.4f'
-                                 % (epoch, (epoch * len(self.train_data)) + i, train_loss))
+                                 % (epoch, (epoch * len(self.train_data)) + i, train_loss / (i + 1)))
 
         train_logger.info("Epoch:{:d} ; Training loss:{:.4f}".format(epoch, train_loss / len(self.train_data)))
 
@@ -319,10 +319,10 @@ class Trainer(object):
 
             tbar.set_description('Epoch %d || Iters: %d || val_loss: %.4f || mIoU: %.4f || nIoU: %.4f'
                                 % (epoch, (epoch * len(self.eval_data)) + i,
-                                   val_loss / len(self.eval_data), mIoU, nIoU))
-        val_logger.info("Epoch{:d} ; val_loss:{:.4f} ; mIoU:{:.4f} ; nIoU:{:.4f} "
-                        .format(epoch, val_loss / len(self.eval_data), mIoU, nIoU,))
-        val_logger.info(f'precision:{precision} ; recall:{recall}')
+                                   val_loss / (i + 1), mIoU, nIoU))
+
+        val_logger.info(f'Epoch{epoch} ; val_loss{(val_loss / len(self.eval_data)):.4f} ; mIoU{mIoU:.4f} ; nIoU{nIoU:.4f}'
+                        f'; precision:{precision} ; recall:{recall}')
 
         ## for all epochs
         if mIoU > self.best_iou:
@@ -400,11 +400,10 @@ if __name__ == "__main__":
         ## logger create
         train_log = '{}_{}_'.format(args.net_choice, args.dataset) + '_train_log.txt'
         train_logger = setup_logger("training process", args.log_dir, filename=train_log)
-        train_logger.info("Using {} GPUs".format(len(args.ctx)))
         train_logger.info(args)
+
         val_log = '{}_{}_'.format(args.net_choice, args.dataset) + '_val_log.txt'
         val_logger = setup_logger("validation process", args.log_dir, filename=val_log)
-        val_logger.info("Using {} GPUs".format(len(args.ctx)))
         val_logger.info(args)
         for epoch in range(args.epochs):
             trainer.training(epoch)
