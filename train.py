@@ -58,6 +58,7 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, default=2, metavar='N', help='input batch size for training')
     parser.add_argument('--lr', type=float, default=0.05, metavar='LR', help='learning rate (default: 1e-3)')   # 0.1
     parser.add_argument('--min-lr', type=float, default=1e-6, metavar='LR', help='min learning rate (default: 1e-6)')
+    parser.add_argument('--warm-up-epochs', type=int, default=0, metavar='N', help='number of warm-up epochs')
     # parser.add_argument('--lr-decay', type=float, default=0.1, help='decay rate of learning rate')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M', help='momentum')
     parser.add_argument('--weight-decay', type=float, default=1e-4, metavar='M',
@@ -281,10 +282,13 @@ class Trainer(object):
             train_loss += loss.item()    # loss.item():mean loss of this batch
             # self.lr_scheduler.step()
 
+            tbar.set_description(f'Epoch:{epoch} || Iters:{(epoch * len(self.train_data)) + i} || lr:{self.optimizer.param_groups[0]["lr"]:.4f}'
+                                 f' || Training loss:{(train_loss / (i + 1)):.4f}')
 
-            tbar.set_description(f'Epoch:{epoch} || Iters:{(epoch * len(self.train_data)) + i} || Training loss:{(train_loss / (i + 1)):.4f}')
+            adjust_learning_rate(self.optimizer, epoch, args.epochs, args.lr,
+                                 args.warm_up_epochs, args.min_lr)
 
-        train_logger.info(f'Epoch{epoch}  Training loss:{(train_loss / len(self.train_data)):.4f}')
+        train_logger.info(f'Epoch:{epoch}  Training loss:{(train_loss / len(self.train_data)):.4f}  learning rate:{self.optimizer.param_groups[0]["lr"]:.4f}')
 
 
     def validation(self, epoch):
@@ -317,15 +321,13 @@ class Trainer(object):
             _, mIoU = self.mIoU.get()
             _, nIoU = self.nIoU.get()
 
-            tbar.set_description('Epoch %d || Iters: %d || val_loss: %.4f || mIoU: %.4f || nIoU: %.4f'
-                                % (epoch, (epoch * len(self.eval_data)) + i,
-                                   val_loss / (i + 1), mIoU, nIoU))
 
-            tbar.set_description(f'Epoch{epoch} || Iters{(epoch * len(self.eval_data)) + i} || val_loss:{val_loss / (i + 1)} \
-                                || mIoU:{mIoU:.4f} || nIoU:{nIoU:.4f}')
+            tbar.set_description(f'Epoch:{epoch} || Iters:{(epoch * len(self.eval_data)) + i} || val_loss:{(val_loss / (i + 1)):.4f}'
+                                 f' || mIoU:{mIoU:.4f} || nIoU:{nIoU:.4f}')
 
-        val_logger.info(f'Epoch{epoch}  val_loss:{(val_loss / len(self.eval_data)):.4f}  mIoU:{mIoU:.4f}  nIoU:{nIoU:.4f}  \
-                        precision:{np.around(precision, 4)}  recall:{np.around(recall, 4)}')
+
+        val_logger.info(f'Epoch:{epoch}  val_loss:{(val_loss / len(self.eval_data)):.4f}  mIoU:{mIoU:.4f}  nIoU:{nIoU:.4f}'
+                        f'  precision:{np.around(precision, 4)}  recall:{np.around(recall, 4)}')
 
         ## for all epochs
         if mIoU > self.best_iou:
@@ -337,6 +339,7 @@ class Trainer(object):
         if epoch >= args.epochs - 1:
             print("best_iou: ", self.best_iou)
             print("best_nIoU: ", self.best_nIoU)
+            val_logger.info(f'best_iou:{self.best_iou:.4f}  best_nIoU:{self.best_nIoU:.4f}')
 
 
     # def predict(self, visual_dir):
@@ -380,6 +383,18 @@ class Trainer(object):
             init.normal_(m.weight.data, 1.0, 0.02)
             init.constant_(m.bias.data, 0.0)
 
+
+def adjust_learning_rate(optimizer, epoch, epochs, lr, warm_up_epochs=0, min_lr=0):
+    """Sets the learning rate to the initial LR decayed by 10 every 2 epochs"""
+
+    if epoch < warm_up_epochs:
+        cur_lr = lr * epoch / warm_up_epochs
+    else:
+        cur_lr = pow(1 - float(epoch - warm_up_epochs) / (epochs - warm_up_epochs + 1), 0.9) \
+                 * (lr - min_lr) + min_lr
+
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = cur_lr
 
 
 
