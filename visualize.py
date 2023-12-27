@@ -19,7 +19,7 @@ def train_visualize(path, save_path):
                 pass
 
     fig, ax = plt.subplots()
-    plt.rc('font', family='Times New Roman')
+    # plt.rc('font', family='Times New Roman')
     plt.rc('mathtext', fontset='stix')
     fig.set_size_inches(8, 6)
 
