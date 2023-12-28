@@ -157,7 +157,7 @@ class BGAM(nn.Module):
     channels: input channel num
     r: reduction ratio
     """
-    def __init__(self, channels=64, r=2, post_process=False):
+    def __init__(self, channels=64, r=4, post_process=False):
         super(BGAM, self).__init__()
         inter_channels = int(channels // r)
         self.channels = channels
