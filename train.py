@@ -77,7 +77,7 @@ def parse_args():
 
     ######## logging and checkpoint ########
     parser.add_argument('--log-dir', type=str, default='./logs', help='log directory')
-    parser.add_argument('--save-dir', type=str, default='./params', help='Directory for saving checkpoint models')
+    parser.add_argument('--save-dir', type=str, default='./params/', help='Directory for saving checkpoint models')
     parser.add_argument('--visual-dir', type=str, default='./visual', help='Directory for saving visualization images')
     parser.add_argument('--visual-img', default=False, action='store_true', help='whether to visualize images')
     parser.add_argument('--colab', action='store_true', default=False, help='whether using colab')
@@ -105,6 +105,24 @@ def parse_args():
 
     print(args)
     return args
+
+
+def adjust_learning_rate(optimizer, epoch, epochs, lr, warm_up_epochs=0, min_lr=0, method='Poly'):
+    """Sets the learning rate to the initial LR decayed by 10 every 2 epochs"""
+
+    if epoch < warm_up_epochs:
+        cur_lr = lr * epoch / warm_up_epochs
+    else:
+        if method == 'Poly':
+            cur_lr = pow(1 - float(epoch - warm_up_epochs) / (epochs - warm_up_epochs + 1), 0.9) \
+                    * (lr - min_lr) + min_lr
+        elif method == 'CosineAnnealing':
+            cur_lr = min_lr + 0.5 * (lr - min_lr) * (1 + np.cos(np.pi * epoch / epochs))   # iters and epochs?
+        else:
+            raise ValueError('Unknown lr scheduler: {}'.format(method))
+
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = cur_lr
 
 
 def save_checkpoint(model, args, epoch, is_best=False):
@@ -255,6 +273,7 @@ class Trainer(object):
 
 
 
+
         ######## Training detail #########
         # epochs, max_iters = args.epochs, args.max_iters
         # log_per_iters, val_per_iters = args.log_iter, args.val_epoch * args.iters_per_epoch
@@ -327,7 +346,8 @@ class Trainer(object):
 
 
         val_logger.info(f'Epoch:{epoch}  val_loss:{(val_loss / len(self.eval_data)):.4f}  mIoU:{mIoU:.4f}  nIoU:{nIoU:.4f}'
-                        f'  precision:{np.around(precision, 4)}  recall:{np.around(recall, 4)}')
+                        f'  precision:{np.around(precision, 4)}  recall:{np.around(recall, 4)}'
+                        f'  tpr:{np.around(ture_positive_rate, 4)}  fpr:{np.around(false_positive_rate, 4)}')
 
         ## for all epochs
         if mIoU > self.best_iou:
@@ -384,19 +404,6 @@ class Trainer(object):
             init.constant_(m.bias.data, 0.0)
 
 
-def adjust_learning_rate(optimizer, epoch, epochs, lr, warm_up_epochs=0, min_lr=0):
-    """Sets the learning rate to the initial LR decayed by 10 every 2 epochs"""
-
-    if epoch < warm_up_epochs:
-        cur_lr = lr * epoch / warm_up_epochs
-    else:
-        cur_lr = pow(1 - float(epoch - warm_up_epochs) / (epochs - warm_up_epochs + 1), 0.9) \
-                 * (lr - min_lr) + min_lr
-
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = cur_lr
-
-
 
 if __name__ == "__main__":
     args = parse_args()
@@ -405,7 +412,7 @@ if __name__ == "__main__":
     if args.colab:
         args.data_root = '/content/experiments/data'
         args.log_dir = '/content/drive/MyDrive/experimentsresult/logs'
-        args.save_dir = '/content/drive/MyDrive/experimentsresult/params'
+        args.save_dir = '/content/drive/MyDrive/experimentsresult/params/'
         args.visual_dir = '/content/drive/MyDrive/experimentsresult/visual'
 
     # ######## training ########
@@ -423,13 +430,23 @@ if __name__ == "__main__":
         val_log = '{}_{}_'.format(args.net_choice, args.dataset) + '_val_log.txt'
         val_logger = setup_logger("validation process", args.log_dir, filename=val_log)
         val_logger.info(args)
+
+        ## train
         for epoch in range(args.epochs):
             trainer.training(epoch)
             save_checkpoint(trainer.net, args, epoch)
             if not args.no_val:
                 trainer.validation(epoch)
 
-        # visualize training and eval metrics
+        ## checkpoint packed
+        pthfiles = [f for f in os.listdir(args.save_dir) if '.pth' in f]
+        packed_name = '{}_{}'.format(args.net_choice, args.dataset)
+        if not os.path.exists(packed_name):
+            os.makedirs(packed_name)
+        for f in pthfiles:
+            shutil.move(os.path.join(args.save_dir, f), os.path.join(args.save_dir, packed_name))
+
+        ## visualize training and eval metrics
         if os.path.exists(os.path.join(args.log_dir, train_log)):
             train_visualize(os.path.join(args.log_dir, train_log), args.visual_dir)
         else:
